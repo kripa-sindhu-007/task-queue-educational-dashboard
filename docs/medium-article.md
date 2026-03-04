@@ -28,6 +28,7 @@ The requirements I set:
 - Dead-letter queue for permanently failed tasks
 - A live dashboard that visualizes every stage of the pipeline
 - Single command to run everything (`docker compose up --build`)
+- CI/CD pipeline that auto-publishes Docker images to Docker Hub
 
 The stack: **Go** for the backend (goroutines are perfect for worker pools), **Redis** for the queue engine (sorted sets give us O(log N) priority queues), **Next.js** for the dashboard, and **Docker** to tie it all together.
 
@@ -501,6 +502,20 @@ It's like pair programming with someone who has infinite patience and encycloped
 ---
 
 ## Try It Yourself
+
+### Option 1 — Pull pre-built images (fastest)
+
+```bash
+git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git
+cd task-queue-educational-dashboard
+docker compose up
+```
+
+Images are published to Docker Hub automatically via GitHub Actions on every push to `main`:
+- [`kripa007/taskqueue-backend`](https://hub.docker.com/r/kripa007/taskqueue-backend)
+- [`kripa007/taskqueue-frontend`](https://hub.docker.com/r/kripa007/taskqueue-frontend)
+
+### Option 2 — Build locally
 
 ```bash
 git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git

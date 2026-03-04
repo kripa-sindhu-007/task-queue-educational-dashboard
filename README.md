@@ -1,5 +1,9 @@
 # Task Queue — An Educational Distributed Task Processing System
 
+[![Build and Publish Docker Images](https://github.com/kripa-sindhu-007/task-queue-educational-dashboard/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/kripa-sindhu-007/task-queue-educational-dashboard/actions/workflows/docker-publish.yml)
+[![Docker Hub Backend](https://img.shields.io/docker/pulls/kripa007/taskqueue-backend?label=backend%20pulls)](https://hub.docker.com/r/kripa007/taskqueue-backend)
+[![Docker Hub Frontend](https://img.shields.io/docker/pulls/kripa007/taskqueue-frontend?label=frontend%20pulls)](https://hub.docker.com/r/kripa007/taskqueue-frontend)
+
 A visual, hands-on platform for learning how distributed task queues work. Submit tasks, watch them flow through priority queues, get picked up by workers, retry on failure, and land in dead-letter storage — all in real time.
 
 Built with **Go**, **Next.js**, **Redis**, and **Docker**.
@@ -101,8 +105,8 @@ That's it — Go and Node.js run inside containers.
 ### Run
 
 ```bash
-git clone https://github.com/kripa-sindhu-007/weekend_project_1.git
-cd weekend_project_1
+git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git
+cd task-queue-educational-dashboard
 docker compose up --build
 ```
 
@@ -137,8 +141,8 @@ Pre-built Docker images are published to Docker Hub on every push to `main`.
 ### Pull and run with Docker Compose (no build needed)
 
 ```bash
-git clone https://github.com/kripa-sindhu-007/weekend_project_1.git
-cd weekend_project_1
+git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git
+cd task-queue-educational-dashboard
 docker compose up
 ```
 
@@ -176,8 +180,8 @@ docker compose up
 On any Linux VM with Docker installed:
 
 ```bash
-git clone https://github.com/kripa-sindhu-007/weekend_project_1.git
-cd weekend_project_1
+git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git
+cd task-queue-educational-dashboard
 docker compose up -d
 ```
 
@@ -224,7 +228,6 @@ This project uses **GitHub Actions** to automatically build and push Docker imag
 ```
 Push to main → Build backend image → Push to Docker Hub
              → Build frontend image → Push to Docker Hub
-             → Verify pulled images
 ```
 
 ### Setting Up Secrets
@@ -328,7 +331,10 @@ Environment variables (set in `docker-compose.yml`):
 │       ├── types.ts                # TypeScript interfaces
 │       ├── hooks.ts                # usePolling hook
 │       └── utils.ts                # cn() helper
-└── docker-compose.yml
+├── docker-compose.yml
+└── .github/
+    └── workflows/
+        └── docker-publish.yml    # CI/CD: build & push to Docker Hub
 ```
 
 ## Tech Stack
@@ -341,6 +347,7 @@ Environment variables (set in `docker-compose.yml`):
 | **Styling** | Tailwind CSS + shadcn/ui pattern | Dark theme, consistent component library |
 | **Animation** | Framer Motion | Smooth transitions for worker states, event entries, queue changes |
 | **Icons** | Lucide React | Clean, consistent icon set |
+| **CI/CD** | GitHub Actions + Docker Hub | Auto-build and publish images on push to main |
 
 ## Contributing
 
