@@ -125,6 +125,124 @@ docker compose down       # stop containers
 docker compose down -v    # stop + remove Redis data volume
 ```
 
+## Using Pre-built Images
+
+Pre-built Docker images are published to Docker Hub on every push to `main`.
+
+| Image | Docker Hub |
+|-------|------------|
+| Backend | [`kripasindhu007/taskqueue-backend`](https://hub.docker.com/r/kripasindhu007/taskqueue-backend) |
+| Frontend | [`kripasindhu007/taskqueue-frontend`](https://hub.docker.com/r/kripasindhu007/taskqueue-frontend) |
+
+### Pull and run with Docker Compose (no build needed)
+
+```bash
+git clone https://github.com/kripa-sindhu-007/weekend_project_1.git
+cd weekend_project_1
+docker compose up
+```
+
+Since `docker-compose.yml` includes `image:` references, Compose will pull from Docker Hub automatically. Use `docker compose up --build` to build locally instead.
+
+### Run individual containers
+
+```bash
+# Start Redis
+docker run -d --name redis -p 6379:6379 redis:7-alpine
+
+# Start backend
+docker run -d --name taskqueue-backend \
+  -p 8080:8080 \
+  -e REDIS_ADDR=redis:6379 \
+  --link redis \
+  kripasindhu007/taskqueue-backend:latest
+
+# Start frontend
+docker run -d --name taskqueue-frontend \
+  -p 3000:3000 \
+  kripasindhu007/taskqueue-frontend:latest
+```
+
+## Deployment
+
+### Local Machine
+
+```bash
+docker compose up
+```
+
+### Cloud Servers (AWS EC2, DigitalOcean, etc.)
+
+On any Linux VM with Docker installed:
+
+```bash
+git clone https://github.com/kripa-sindhu-007/weekend_project_1.git
+cd weekend_project_1
+docker compose up -d
+```
+
+Ensure ports `3000` (frontend) and `8080` (API) are open in your firewall/security group.
+
+### Container Platforms
+
+**Kubernetes** — deploy each service as a Deployment + Service. A minimal outline:
+
+```yaml
+# backend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskqueue-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: taskqueue-backend
+  template:
+    metadata:
+      labels:
+        app: taskqueue-backend
+    spec:
+      containers:
+        - name: backend
+          image: kripasindhu007/taskqueue-backend:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: REDIS_ADDR
+              value: "redis:6379"
+```
+
+**Railway / Render / Fly.io** — point each service to the Docker image or connect the GitHub repo for automatic deploys.
+
+## CI/CD
+
+This project uses **GitHub Actions** to automatically build and push Docker images to Docker Hub on every push to `main`.
+
+### Pipeline Overview
+
+```
+Push to main → Build backend image → Push to Docker Hub
+             → Build frontend image → Push to Docker Hub
+             → Verify pulled images
+```
+
+### Setting Up Secrets
+
+Add these secrets in your GitHub repository settings (**Settings → Secrets and variables → Actions**):
+
+| Secret | Description |
+|--------|-------------|
+| `DOCKERHUB_USERNAME` | Your Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (create at [hub.docker.com/settings/security](https://hub.docker.com/settings/security)) |
+
+### Tagging Strategy
+
+Each push to `main` produces two tags per image:
+
+- **`latest`** — always points to the most recent build
+- **`sha-<7-char>`** — pinned to the exact commit (e.g., `sha-a3edcf4`) for reproducibility
+
 ## API Endpoints
 
 | Method | Path | Description |

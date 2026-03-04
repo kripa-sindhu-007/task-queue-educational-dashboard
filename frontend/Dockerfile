@@ -11,6 +11,10 @@ RUN npm run build
 FROM node:20-alpine
 WORKDIR /app
 
+LABEL org.opencontainers.image.source="https://github.com/kripa-sindhu-007/weekend_project_1"
+LABEL org.opencontainers.image.description="Task Queue Frontend — Next.js real-time dashboard"
+LABEL org.opencontainers.image.licenses="MIT"
+
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
