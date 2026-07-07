@@ -7,12 +7,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weekend-project/taskqueue/internal/queue"
-	"github.com/weekend-project/taskqueue/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
 )
 
 type Pool struct {
-	queue        *queue.PriorityQueue
+	broker       broker.Broker
 	executor     *Executor
 	workerCount  int
 	pollInterval time.Duration
@@ -22,17 +22,17 @@ type Pool struct {
 }
 
 func NewPool(
-	q *queue.PriorityQueue,
+	b broker.Broker,
 	executor *Executor,
 	workerCount int,
-	pollIntervalMs int,
+	pollInterval time.Duration,
 	workerState *store.WorkerStateStore,
 ) *Pool {
 	return &Pool{
-		queue:        q,
+		broker:       b,
 		executor:     executor,
 		workerCount:  workerCount,
-		pollInterval: time.Duration(pollIntervalMs) * time.Millisecond,
+		pollInterval: pollInterval,
 		workerState:  workerState,
 	}
 }
@@ -71,7 +71,7 @@ func (p *Pool) worker(ctx context.Context, id int) {
 		default:
 		}
 
-		task, err := p.queue.Dequeue(ctx)
+		task, err := p.broker.Dequeue(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -88,7 +88,7 @@ func (p *Pool) worker(ctx context.Context, id int) {
 		}
 
 		p.activeCount.Add(1)
-		p.executor.Execute(ctx, task, id)
+		p.executor.Execute(task, id)
 		p.activeCount.Add(-1)
 	}
 }

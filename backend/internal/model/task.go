@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type TaskStatus string
 
@@ -12,14 +15,16 @@ const (
 )
 
 type Task struct {
-	ID         string     `json:"id"`
-	Priority   int        `json:"priority"`
-	Delay      int        `json:"delay"`       // seconds before execution
-	MaxRetries int        `json:"max_retries"` // 0 = no retries
-	Retries    int        `json:"retries"`
-	Status     TaskStatus `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	Error      string     `json:"error,omitempty"`
+	ID         string          `json:"id"`
+	Type       string          `json:"type,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	Priority   int             `json:"priority"`
+	Delay      int             `json:"delay"`       // seconds before execution
+	MaxRetries int             `json:"max_retries"` // 0 = no retries
+	Retries    int             `json:"retries"`
+	Status     TaskStatus      `json:"status"`
+	CreatedAt  time.Time       `json:"created_at"`
+	Error      string          `json:"error,omitempty"`
 }
 
 type Metrics struct {

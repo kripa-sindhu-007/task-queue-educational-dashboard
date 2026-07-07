@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/redis/go-redis/v9"
-	"github.com/weekend-project/taskqueue/internal/model"
 )
 
 type MetricsStore struct {

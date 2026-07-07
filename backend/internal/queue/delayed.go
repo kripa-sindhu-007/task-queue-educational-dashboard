@@ -2,40 +2,40 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/weekend-project/taskqueue/internal/model"
-	"github.com/weekend-project/taskqueue/internal/store"
+
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
 )
 
+// DelayedScheduler holds the "delayed" set. Members are task IDs; score = the
+// unix timestamp at which the task should become ready.
 type DelayedScheduler struct {
 	client *redis.Client
 	queue  *PriorityQueue
+	tasks  *store.TaskStore
 	events *store.EventStore
 }
 
-func NewDelayedScheduler(client *redis.Client, queue *PriorityQueue, events *store.EventStore) *DelayedScheduler {
-	return &DelayedScheduler{client: client, queue: queue, events: events}
+func NewDelayedScheduler(client *redis.Client, queue *PriorityQueue, tasks *store.TaskStore, events *store.EventStore) *DelayedScheduler {
+	return &DelayedScheduler{client: client, queue: queue, tasks: tasks, events: events}
 }
 
-// Schedule adds a task to the delayed set with score = unix timestamp when it should become ready.
+// Schedule adds a task ID to the delayed set. The caller must have persisted the
+// canonical record via the TaskStore first.
 func (d *DelayedScheduler) Schedule(ctx context.Context, task model.Task, delay time.Duration) error {
-	data, err := json.Marshal(task)
-	if err != nil {
-		return fmt.Errorf("marshal task: %w", err)
-	}
 	executeAt := time.Now().Add(delay).Unix()
 	return d.client.ZAdd(ctx, store.KeyDelayed, redis.Z{
 		Score:  float64(executeAt),
-		Member: string(data),
+		Member: task.ID,
 	}).Err()
 }
 
-// Start polls the delayed set every second, moving due tasks to the ready queue.
+// Start polls the delayed set every second, moving due task IDs to the ready set.
 func (d *DelayedScheduler) Start(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -53,7 +53,7 @@ func (d *DelayedScheduler) Start(ctx context.Context) {
 
 func (d *DelayedScheduler) promoteDueTasks(ctx context.Context) {
 	now := float64(time.Now().Unix())
-	results, err := d.client.ZRangeByScoreWithScores(ctx, store.KeyDelayed, &redis.ZRangeBy{
+	ids, err := d.client.ZRangeByScore(ctx, store.KeyDelayed, &redis.ZRangeBy{
 		Min:   "-inf",
 		Max:   fmt.Sprintf("%f", now),
 		Count: 100,
@@ -63,35 +63,35 @@ func (d *DelayedScheduler) promoteDueTasks(ctx context.Context) {
 		return
 	}
 
-	for _, z := range results {
-		member := z.Member.(string)
-		// Remove from delayed set
-		removed, err := d.client.ZRem(ctx, store.KeyDelayed, member).Result()
+	for _, id := range ids {
+		// ZREM acts as the claim: whoever removes it owns the promotion.
+		removed, err := d.client.ZRem(ctx, store.KeyDelayed, id).Result()
 		if err != nil || removed == 0 {
 			continue // another instance grabbed it
 		}
-		var task model.Task
-		if err := json.Unmarshal([]byte(member), &task); err != nil {
-			log.Printf("Error unmarshaling delayed task: %v", err)
+		task, err := d.tasks.Get(ctx, id)
+		if err != nil {
+			if err != store.ErrTaskNotFound {
+				log.Printf("Error loading delayed task %s: %v", id, err)
+			}
 			continue
 		}
 		if err := d.queue.Enqueue(ctx, task); err != nil {
-			log.Printf("Error promoting delayed task %s: %v", task.ID, err)
-		} else {
-			log.Printf("Promoted delayed task %s to ready queue", task.ID)
-			// Emit promoted event
-			if d.events != nil {
-				event := model.TaskEvent{
-					ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
-					TaskID:    task.ID,
-					Type:      "promoted",
-					WorkerID:  -1,
-					Detail:    "Moved from delayed to ready queue",
-					Timestamp: time.Now(),
-				}
-				if err := d.events.Push(ctx, event); err != nil {
-					log.Printf("Error pushing promoted event: %v", err)
-				}
+			log.Printf("Error promoting delayed task %s: %v", id, err)
+			continue
+		}
+		log.Printf("Promoted delayed task %s to ready queue", id)
+		if d.events != nil {
+			event := model.TaskEvent{
+				ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
+				TaskID:    id,
+				Type:      "promoted",
+				WorkerID:  -1,
+				Detail:    "Moved from delayed to ready queue",
+				Timestamp: time.Now(),
+			}
+			if err := d.events.Push(ctx, event); err != nil {
+				log.Printf("Error pushing promoted event: %v", err)
 			}
 		}
 	}

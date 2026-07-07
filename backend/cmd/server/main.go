@@ -7,47 +7,71 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/weekend-project/taskqueue/internal/api"
-	"github.com/weekend-project/taskqueue/internal/config"
-	"github.com/weekend-project/taskqueue/internal/queue"
-	"github.com/weekend-project/taskqueue/internal/store"
-	"github.com/weekend-project/taskqueue/internal/worker"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/api"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/config"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/worker"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config error: %v", err)
+	}
 
 	// Redis
 	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass)
 	defer redisClient.Close()
 
 	// Stores
+	taskStore := store.NewTaskStore(redisClient)
 	deadLetterStore := store.NewDeadLetterStore(redisClient)
 	metricsStore := store.NewMetricsStore(redisClient)
 	eventStore := store.NewEventStore(redisClient)
 	workerStateStore := store.NewWorkerStateStore(redisClient)
-	queuePeekStore := store.NewQueuePeekStore(redisClient)
+	queuePeekStore := store.NewQueuePeekStore(redisClient, taskStore)
 
-	// Queue
-	priorityQueue := queue.NewPriorityQueue(redisClient)
-	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, eventStore)
+	// Queue + broker
+	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
+	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore)
+	redisBroker := broker.NewRedisBroker(taskStore, priorityQueue, delayedScheduler)
 
 	// Workers
-	executor := worker.NewExecutor(delayedScheduler, deadLetterStore, metricsStore, eventStore, workerStateStore)
-	pool := worker.NewPool(priorityQueue, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore)
+	executor := worker.NewExecutor(worker.ExecutorDeps{
+		Tasks:        taskStore,
+		Delayed:      delayedScheduler,
+		DeadLetter:   deadLetterStore,
+		Metrics:      metricsStore,
+		Events:       eventStore,
+		WorkerState:  workerStateStore,
+		DrainTimeout: cfg.DrainTimeout,
+	})
+	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore)
 
 	// API
-	handler := api.NewHandler(
-		priorityQueue, delayedScheduler, deadLetterStore, metricsStore,
-		pool, redisClient, eventStore, workerStateStore, queuePeekStore,
-	)
+	handler := api.NewHandler(api.HandlerDeps{
+		Queue:       priorityQueue,
+		Delayed:     delayedScheduler,
+		DeadLetter:  deadLetterStore,
+		Metrics:     metricsStore,
+		Pool:        pool,
+		Redis:       redisClient,
+		Events:      eventStore,
+		WorkerState: workerStateStore,
+		QueuePeek:   queuePeekStore,
+		Tasks:       taskStore,
+	})
 	router := api.NewRouter(handler)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%s", cfg.ServerPort),
-		Handler: router,
+		Addr:         fmt.Sprintf(":%s", cfg.ServerPort),
+		Handler:      router,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
 	// Graceful shutdown context
@@ -73,7 +97,7 @@ func main() {
 	log.Println("Shutdown signal received")
 
 	// Shutdown HTTP server with timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
