@@ -11,6 +11,7 @@ import (
 const (
 	KeyReady      = "taskqueue:ready"
 	KeyDelayed    = "taskqueue:delayed"
+	KeyProcessing = "taskqueue:processing" // Phase 1: leased tasks, score = lease deadline (ms)
 	KeyDeadLetter = "taskqueue:deadletter"
 	KeyMetrics    = "taskqueue:metrics"
 	KeyEvents     = "taskqueue:events"

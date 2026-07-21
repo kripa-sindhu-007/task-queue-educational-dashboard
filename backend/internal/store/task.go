@@ -95,6 +95,16 @@ func (s *TaskStore) Get(ctx context.Context, id string) (model.Task, error) {
 	return hashToTask(vals), nil
 }
 
+// Exists returns true if a task record with the given ID already exists.
+// Used for idempotent enqueue: reject duplicate client-supplied IDs (P1.6).
+func (s *TaskStore) Exists(ctx context.Context, id string) (bool, error) {
+	n, err := s.client.Exists(ctx, TaskKey(id)).Result()
+	if err != nil {
+		return false, fmt.Errorf("exists task %s: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // GetMany loads several task records in a single pipeline, skipping any that are
 // missing (e.g. flushed or expired between listing IDs and hydrating them).
 func (s *TaskStore) GetMany(ctx context.Context, ids []string) ([]model.Task, error) {

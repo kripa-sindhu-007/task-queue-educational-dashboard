@@ -16,6 +16,10 @@ type Config struct {
 	PollInterval time.Duration // how long a worker sleeps when the ready queue is empty
 	DrainTimeout time.Duration // budget for post-cancellation Redis writes on shutdown
 
+	// Phase 1: lease-based delivery
+	VisibilityTimeout time.Duration // how long a worker has to Ack before the reaper reclaims the task
+	ReaperInterval    time.Duration // how often the reaper scans for expired leases
+
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
@@ -33,6 +37,9 @@ func Load() (*Config, error) {
 		WorkerCount:  getEnvInt("WORKER_COUNT", 5),
 		PollInterval: getEnvMillis("POLL_INTERVAL_MS", 500),
 		DrainTimeout: getEnvMillis("DRAIN_TIMEOUT_MS", 5000),
+
+		VisibilityTimeout: getEnvMillis("VISIBILITY_TIMEOUT_MS", 30000), // 30s default
+		ReaperInterval:    getEnvMillis("REAPER_INTERVAL_MS", 5000),     // 5s default
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),
@@ -60,6 +67,12 @@ func (c *Config) validate() error {
 	}
 	if c.DrainTimeout <= 0 {
 		return fmt.Errorf("config: DRAIN_TIMEOUT_MS must be > 0")
+	}
+	if c.VisibilityTimeout <= 0 {
+		return fmt.Errorf("config: VISIBILITY_TIMEOUT_MS must be > 0")
+	}
+	if c.ReaperInterval <= 0 {
+		return fmt.Errorf("config: REAPER_INTERVAL_MS must be > 0")
 	}
 	return nil
 }

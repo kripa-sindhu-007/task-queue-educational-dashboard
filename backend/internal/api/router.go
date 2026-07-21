@@ -8,6 +8,7 @@ func NewRouter(h *Handler) http.Handler {
 	mux.HandleFunc("POST /api/tasks", h.SubmitTask)
 	mux.HandleFunc("GET /api/metrics", h.GetMetrics)
 	mux.HandleFunc("GET /api/tasks/failed", h.GetFailedTasks)
+	mux.HandleFunc("POST /api/tasks/failed/redrive", h.RedriveFailed)
 	mux.HandleFunc("GET /api/tasks/{id}", h.GetTask)
 	mux.HandleFunc("GET /api/health", h.HealthCheck)
 

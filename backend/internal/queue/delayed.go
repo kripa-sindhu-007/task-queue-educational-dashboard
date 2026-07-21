@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"time"
@@ -12,17 +13,27 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
 )
 
+//go:embed scripts/promote.lua
+var promoteScript string
+
 // DelayedScheduler holds the "delayed" set. Members are task IDs; score = the
 // unix timestamp at which the task should become ready.
 type DelayedScheduler struct {
-	client *redis.Client
-	queue  *PriorityQueue
-	tasks  *store.TaskStore
-	events *store.EventStore
+	client     *redis.Client
+	queue      *PriorityQueue
+	tasks      *store.TaskStore
+	events     *store.EventStore
+	promoteCmd *redis.Script
 }
 
 func NewDelayedScheduler(client *redis.Client, queue *PriorityQueue, tasks *store.TaskStore, events *store.EventStore) *DelayedScheduler {
-	return &DelayedScheduler{client: client, queue: queue, tasks: tasks, events: events}
+	return &DelayedScheduler{
+		client:     client,
+		queue:      queue,
+		tasks:      tasks,
+		events:     events,
+		promoteCmd: redis.NewScript(promoteScript),
+	}
 }
 
 // Schedule adds a task ID to the delayed set. The caller must have persisted the
@@ -35,7 +46,8 @@ func (d *DelayedScheduler) Schedule(ctx context.Context, task model.Task, delay 
 	}).Err()
 }
 
-// Start polls the delayed set every second, moving due task IDs to the ready set.
+// Start polls the delayed set every second, moving due task IDs to the ready set
+// atomically via a Lua script (no loss window between ZREM and ZADD).
 func (d *DelayedScheduler) Start(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -52,47 +64,33 @@ func (d *DelayedScheduler) Start(ctx context.Context) {
 }
 
 func (d *DelayedScheduler) promoteDueTasks(ctx context.Context) {
-	now := float64(time.Now().Unix())
-	ids, err := d.client.ZRangeByScore(ctx, store.KeyDelayed, &redis.ZRangeBy{
-		Min:   "-inf",
-		Max:   fmt.Sprintf("%f", now),
-		Count: 100,
-	}).Result()
-	if err != nil {
-		log.Printf("Error fetching delayed tasks: %v", err)
+	now := fmt.Sprintf("%d", time.Now().Unix())
+	batchSize := int64(100)
+
+	promoted, err := d.promoteCmd.Run(ctx, d.client,
+		[]string{store.KeyDelayed, store.KeyReady, store.KeyTaskPrefix},
+		now, batchSize,
+	).Int64()
+	if err != nil && err != redis.Nil {
+		log.Printf("Error promoting delayed tasks: %v", err)
 		return
 	}
 
-	for _, id := range ids {
-		// ZREM acts as the claim: whoever removes it owns the promotion.
-		removed, err := d.client.ZRem(ctx, store.KeyDelayed, id).Result()
-		if err != nil || removed == 0 {
-			continue // another instance grabbed it
-		}
-		task, err := d.tasks.Get(ctx, id)
-		if err != nil {
-			if err != store.ErrTaskNotFound {
-				log.Printf("Error loading delayed task %s: %v", id, err)
-			}
-			continue
-		}
-		if err := d.queue.Enqueue(ctx, task); err != nil {
-			log.Printf("Error promoting delayed task %s: %v", id, err)
-			continue
-		}
-		log.Printf("Promoted delayed task %s to ready queue", id)
+	if promoted > 0 {
+		log.Printf("Promoted %d delayed task(s) to ready queue", promoted)
+		// Emit events for promoted tasks. Since the Lua script handles the batch
+		// atomically, we emit a summary event rather than per-task events to avoid
+		// needing the ID list returned from Lua (keeping the script simple).
 		if d.events != nil {
 			event := model.TaskEvent{
 				ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
-				TaskID:    id,
+				TaskID:    "",
 				Type:      "promoted",
 				WorkerID:  -1,
-				Detail:    "Moved from delayed to ready queue",
+				Detail:    fmt.Sprintf("Promoted %d task(s) from delayed to ready", promoted),
 				Timestamp: time.Now(),
 			}
-			if err := d.events.Push(ctx, event); err != nil {
-				log.Printf("Error pushing promoted event: %v", err)
-			}
+			d.events.Push(ctx, event)
 		}
 	}
 }

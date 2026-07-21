@@ -70,6 +70,21 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	id := req.ID
 	if id == "" {
 		id = genID()
+	} else {
+		// Client-supplied ID: check for duplicates (idempotent enqueue, P1.6).
+		// If a record already exists, reject to prevent double-submission from
+		// network retries. Server-generated IDs are always unique so they skip this.
+		exists, err := h.deps.Tasks.Exists(r.Context(), id)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if exists {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("task with id %q already exists", id),
+			})
+			return
+		}
 	}
 
 	task := model.Task{
@@ -230,7 +245,7 @@ func (h *Handler) GetEnhancedMetrics(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) FlushData(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keys := []string{
-		store.KeyReady, store.KeyDelayed, store.KeyDeadLetter,
+		store.KeyReady, store.KeyDelayed, store.KeyProcessing, store.KeyDeadLetter,
 		store.KeyMetrics, store.KeyEvents, store.KeyWorkers,
 	}
 	h.deps.Redis.Del(ctx, keys...)
@@ -246,6 +261,60 @@ func (h *Handler) FlushData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "flushed"})
+}
+
+// RedriveFailed pops all tasks from the dead-letter queue, resets their retries
+// and status, updates the canonical record, and re-enqueues them to ready (P1.7).
+func (h *Handler) RedriveFailed(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	failed, err := h.deps.DeadLetter.DrainAll(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if len(failed) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"redriven": 0,
+			"message":  "dead-letter queue is empty",
+		})
+		return
+	}
+
+	redriven := 0
+	for _, ft := range failed {
+		task := ft.Task
+		task.Retries = 0
+		task.Status = model.StatusPending
+		task.Error = ""
+
+		// Update canonical record
+		if err := h.deps.Tasks.Save(ctx, task); err != nil {
+			continue
+		}
+		// Enqueue to ready
+		if err := h.deps.Queue.Enqueue(ctx, task); err != nil {
+			continue
+		}
+		redriven++
+
+		// Emit event
+		event := model.TaskEvent{
+			ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
+			TaskID:    task.ID,
+			Type:      "redriven",
+			WorkerID:  -1,
+			Detail:    "Moved from dead-letter queue back to ready",
+			Timestamp: time.Now(),
+		}
+		h.deps.Events.Push(ctx, event)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"redriven": redriven,
+		"total":    len(failed),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
@@ -20,6 +21,7 @@ const DefaultDrainTimeout = 5 * time.Second
 // ExecutorDeps bundles the collaborators an Executor needs, replacing a long
 // positional constructor (P0.8).
 type ExecutorDeps struct {
+	Broker       broker.Broker
 	Tasks        *store.TaskStore
 	Delayed      *queue.DelayedScheduler
 	DeadLetter   *store.DeadLetterStore
@@ -51,6 +53,11 @@ func BackoffDelay(retries int) time.Duration {
 // drain context (background + timeout) rather than the worker's context, so
 // completion/failure state is persisted even when the server is shutting down
 // and the worker context has already been cancelled (P0.5).
+//
+// Phase 1: after work completes, the executor calls Ack (success) or Nack
+// (failure) to release the lease from the processing set. If the lease was
+// already reclaimed by the reaper (ErrLeaseNotHeld), the executor logs and
+// skips further state changes — the task will be re-delivered.
 func (e *Executor) Execute(task *model.Task, workerID int) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.deps.DrainTimeout)
 	defer cancel()
@@ -58,11 +65,7 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 	log.Printf("Executing task %s (priority=%d, attempt=%d/%d)",
 		task.ID, task.Priority, task.Retries+1, task.MaxRetries+1)
 
-	// Mark task + worker as processing.
-	task.Status = model.StatusProcessing
-	if err := e.deps.Tasks.Save(ctx, *task); err != nil {
-		log.Printf("Error saving processing state for %s: %v", task.ID, err)
-	}
+	// Mark worker as processing (task record status already set by dequeue Lua script).
 	e.deps.WorkerState.Set(ctx, model.WorkerState{
 		ID:        workerID,
 		Status:    "processing",
@@ -81,17 +84,37 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 		log.Printf("Task %s failed: %s", task.ID, errMsg)
 		task.Error = errMsg
 		e.emitEvent(ctx, task.ID, "failed", workerID, errMsg)
-		e.handleFailure(ctx, task, workerID)
-	} else {
-		task.Status = model.StatusCompleted
-		task.Error = ""
-		if err := e.deps.Tasks.Save(ctx, *task); err != nil {
-			log.Printf("Error saving completed state for %s: %v", task.ID, err)
+
+		// Release the lease via Nack. If the reaper already reclaimed it,
+		// skip retry routing — the task will be re-delivered automatically.
+		if err := e.deps.Broker.Nack(ctx, task.ID, true); err != nil {
+			if err == broker.ErrLeaseNotHeld {
+				log.Printf("Task %s: lease already reclaimed by reaper, skipping retry routing", task.ID)
+			} else {
+				log.Printf("Task %s: nack error: %v", task.ID, err)
+			}
+			// Either way, don't do retry routing — we don't own the task.
+		} else {
+			// We successfully released the lease — handle retry/DLQ routing.
+			e.handleFailure(ctx, task, workerID)
 		}
-		log.Printf("Task %s completed successfully", task.ID)
-		e.emitEvent(ctx, task.ID, "completed", workerID, fmt.Sprintf("Completed in %v", workDuration))
-		if err := e.deps.Metrics.IncrProcessed(ctx); err != nil {
-			log.Printf("Error incrementing processed metric: %v", err)
+	} else {
+		// Success path: Ack releases the lease and atomically marks completed.
+		if err := e.deps.Broker.Ack(ctx, task.ID); err != nil {
+			if err == broker.ErrLeaseNotHeld {
+				log.Printf("Task %s: lease already reclaimed by reaper (completed work will be redone)", task.ID)
+			} else {
+				log.Printf("Task %s: ack error: %v", task.ID, err)
+			}
+			// Don't record completion — we lost the lease race.
+		} else {
+			// Ack succeeded — we own the completion. Record metrics/events.
+			// Note: ack.lua already set status=completed in the hash.
+			log.Printf("Task %s completed successfully", task.ID)
+			e.emitEvent(ctx, task.ID, "completed", workerID, fmt.Sprintf("Completed in %v", workDuration))
+			if err := e.deps.Metrics.IncrProcessed(ctx); err != nil {
+				log.Printf("Error incrementing processed metric: %v", err)
+			}
 		}
 	}
 

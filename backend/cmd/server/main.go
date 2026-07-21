@@ -12,6 +12,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/config"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/reaper"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/worker"
 )
@@ -37,10 +38,11 @@ func main() {
 	// Queue + broker
 	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
 	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore)
-	redisBroker := broker.NewRedisBroker(taskStore, priorityQueue, delayedScheduler)
+	redisBroker := broker.NewRedisBroker(redisClient, taskStore, priorityQueue, delayedScheduler, cfg.VisibilityTimeout)
 
 	// Workers
 	executor := worker.NewExecutor(worker.ExecutorDeps{
+		Broker:       redisBroker,
 		Tasks:        taskStore,
 		Delayed:      delayedScheduler,
 		DeadLetter:   deadLetterStore,
@@ -80,6 +82,13 @@ func main() {
 
 	// Start delayed scheduler
 	go delayedScheduler.Start(ctx)
+
+	// Start reaper (reclaims expired leases from processing set)
+	taskReaper := reaper.New(redisClient, taskStore, deadLetterStore, eventStore, metricsStore, reaper.Config{
+		Interval:  cfg.ReaperInterval,
+		BatchSize: 100,
+	})
+	go taskReaper.Start(ctx)
 
 	// Start worker pool
 	pool.Start(ctx)
