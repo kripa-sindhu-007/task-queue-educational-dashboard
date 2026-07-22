@@ -5,6 +5,7 @@ import {
   Task,
   TaskEvent,
   WorkerState,
+  Node,
   QueueSnapshot,
   EnhancedMetrics,
 } from "./types";
@@ -50,6 +51,12 @@ export async function getEvents(limit = 50): Promise<TaskEvent[]> {
 export async function getWorkers(): Promise<WorkerState[]> {
   const res = await fetch(`${API_BASE}/api/workers`);
   if (!res.ok) throw new Error("Failed to fetch workers");
+  return res.json();
+}
+
+export async function getNodes(): Promise<Node[]> {
+  const res = await fetch(`${API_BASE}/api/nodes`);
+  if (!res.ok) throw new Error("Failed to fetch nodes");
   return res.json();
 }
 

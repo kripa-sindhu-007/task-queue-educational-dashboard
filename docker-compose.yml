@@ -11,18 +11,44 @@ services:
       timeout: 3s
       retries: 5
 
+  # backend = API + delayed scheduler + reaper only. RUN_WORKERS=false so task
+  # execution is handled by the scalable `worker` service below.
   backend:
     image: kripa007/taskqueue-backend:latest
     build: ./backend
+    command: ["/server"]
     ports:
       - "8080:8080"
     environment:
       - REDIS_ADDR=redis:6379
-      - WORKER_COUNT=5
-      - POLL_INTERVAL_MS=500
+      - RUN_WORKERS=false
+      - REAPER_INTERVAL_MS=5000
+      - HEARTBEAT_TTL_MS=10000
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  # worker = standalone worker node. Scale with:
+  #   docker compose up --scale worker=5
+  # Each replica registers itself, heartbeats, and executes tasks. Killing one
+  # (docker compose kill worker) makes the reaper reclaim its in-flight tasks.
+  worker:
+    image: kripa007/taskqueue-backend:latest
+    build: ./backend
+    command: ["/worker"]
+    environment:
+      - REDIS_ADDR=redis:6379
+      - WORKER_COUNT=5
+      - POLL_INTERVAL_MS=500
+      - HEARTBEAT_INTERVAL_MS=3000
+      - HEARTBEAT_TTL_MS=10000
+      - VISIBILITY_TIMEOUT_MS=30000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
     restart: unless-stopped
 
   frontend:

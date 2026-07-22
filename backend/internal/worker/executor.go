@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/handler"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
@@ -22,6 +22,7 @@ const DefaultDrainTimeout = 5 * time.Second
 // positional constructor (P0.8).
 type ExecutorDeps struct {
 	Broker       broker.Broker
+	Handlers     *handler.Registry
 	Tasks        *store.TaskStore
 	Delayed      *queue.DelayedScheduler
 	DeadLetter   *store.DeadLetterStore
@@ -38,6 +39,9 @@ type Executor struct {
 func NewExecutor(deps ExecutorDeps) *Executor {
 	if deps.DrainTimeout <= 0 {
 		deps.DrainTimeout = DefaultDrainTimeout
+	}
+	if deps.Handlers == nil {
+		deps.Handlers = handler.NewDefaultRegistry()
 	}
 	return &Executor{deps: deps}
 }
@@ -66,21 +70,25 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 		task.ID, task.Priority, task.Retries+1, task.MaxRetries+1)
 
 	// Mark worker as processing (task record status already set by dequeue Lua script).
-	e.deps.WorkerState.Set(ctx, model.WorkerState{
-		ID:        workerID,
-		Status:    "processing",
-		TaskID:    task.ID,
-		StartedAt: time.Now(),
-	})
+	if e.deps.WorkerState != nil {
+		e.deps.WorkerState.Set(ctx, model.WorkerState{
+			ID:        workerID,
+			Status:    "processing",
+			TaskID:    task.ID,
+			StartedAt: time.Now(),
+		})
+	}
 	e.emitEvent(ctx, task.ID, "started", workerID, fmt.Sprintf("Worker %d picked up task", workerID))
 
-	// Simulate work (200-800ms). Handlers keyed by task.Type arrive in P2.4.
-	workDuration := time.Duration(200+rand.Intn(600)) * time.Millisecond
-	time.Sleep(workDuration)
+	// Dispatch to the handler registered for this task's Type (P2.4). The work
+	// context (ctx) carries the drain timeout so a shutting-down worker doesn't
+	// run forever; handlers are expected to honor cancellation.
+	start := time.Now()
+	result, workErr := e.deps.Handlers.Dispatch(ctx, *task)
+	elapsed := time.Since(start)
 
-	// ~30% simulated failure rate.
-	if rand.Float64() < 0.3 {
-		errMsg := fmt.Sprintf("simulated failure for task %s", task.ID)
+	if workErr != nil {
+		errMsg := workErr.Error()
 		log.Printf("Task %s failed: %s", task.ID, errMsg)
 		task.Error = errMsg
 		e.emitEvent(ctx, task.ID, "failed", workerID, errMsg)
@@ -110,8 +118,12 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 		} else {
 			// Ack succeeded — we own the completion. Record metrics/events.
 			// Note: ack.lua already set status=completed in the hash.
+			detail := fmt.Sprintf("Completed in %v", elapsed.Round(time.Millisecond))
+			if result.Detail != "" {
+				detail = fmt.Sprintf("%s (%s)", detail, result.Detail)
+			}
 			log.Printf("Task %s completed successfully", task.ID)
-			e.emitEvent(ctx, task.ID, "completed", workerID, fmt.Sprintf("Completed in %v", workDuration))
+			e.emitEvent(ctx, task.ID, "completed", workerID, detail)
 			if err := e.deps.Metrics.IncrProcessed(ctx); err != nil {
 				log.Printf("Error incrementing processed metric: %v", err)
 			}
@@ -119,10 +131,12 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 	}
 
 	// Return worker to idle.
-	e.deps.WorkerState.Set(ctx, model.WorkerState{
-		ID:     workerID,
-		Status: "idle",
-	})
+	if e.deps.WorkerState != nil {
+		e.deps.WorkerState.Set(ctx, model.WorkerState{
+			ID:     workerID,
+			Status: "idle",
+		})
+	}
 }
 
 func (e *Executor) handleFailure(ctx context.Context, task *model.Task, workerID int) {

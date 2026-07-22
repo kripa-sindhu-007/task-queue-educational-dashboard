@@ -26,14 +26,17 @@ type Config struct {
 	BatchSize int64         // max expired tasks to process per tick (e.g. 100)
 }
 
-// Reaper periodically scans the processing ZSET for expired leases and reclaims
-// tasks back to the ready queue or dead-letters them.
+// Reaper periodically scans for (a) dead nodes, eagerly reclaiming all of their
+// in-flight work, and (b) individually expired leases. Together these guarantee
+// at-least-once delivery: no task is stranded whether a whole node dies or a
+// single lease lapses.
 type Reaper struct {
 	client     *redis.Client
 	tasks      *store.TaskStore
 	deadLetter *store.DeadLetterStore
 	events     *store.EventStore
 	metrics    *store.MetricsStore
+	nodes      *store.NodeStore
 	cfg        Config
 	reclaimCmd *redis.Script
 }
@@ -44,6 +47,7 @@ func New(
 	deadLetter *store.DeadLetterStore,
 	events *store.EventStore,
 	metrics *store.MetricsStore,
+	nodes *store.NodeStore,
 	cfg Config,
 ) *Reaper {
 	if cfg.BatchSize <= 0 {
@@ -55,6 +59,7 @@ func New(
 		deadLetter: deadLetter,
 		events:     events,
 		metrics:    metrics,
+		nodes:      nodes,
 		cfg:        cfg,
 		reclaimCmd: redis.NewScript(reclaimScript),
 	}
@@ -73,7 +78,46 @@ func (r *Reaper) Start(ctx context.Context) {
 			log.Println("Reaper stopped")
 			return
 		case <-ticker.C:
+			r.reapDeadNodes(ctx)
 			r.reap(ctx)
+		}
+	}
+}
+
+// reapDeadNodes detects registered nodes whose heartbeat has expired and eagerly
+// reclaims every task they hold in flight — without waiting for each individual
+// lease to expire. This is what makes the "kill a worker, watch it recover"
+// demo fast: recovery is bounded by the heartbeat TTL, not the visibility
+// timeout. After a dead node's tasks are reclaimed, the node is removed from the
+// registry.
+func (r *Reaper) reapDeadNodes(ctx context.Context) {
+	if r.nodes == nil {
+		return
+	}
+	dead, err := r.nodes.DeadNodeIDs(ctx)
+	if err != nil {
+		log.Printf("Reaper: error scanning for dead nodes: %v", err)
+		return
+	}
+	for _, nodeID := range dead {
+		taskIDs, err := r.nodes.OwnedTaskIDs(ctx, nodeID)
+		if err != nil {
+			log.Printf("Reaper: error listing tasks for dead node %s: %v", nodeID, err)
+			continue
+		}
+		if len(taskIDs) > 0 {
+			log.Printf("Reaper: node %s is dead — reclaiming %d in-flight task(s)", nodeID, len(taskIDs))
+			r.emitEvent(ctx, "", "node_dead",
+				fmt.Sprintf("Node %s heartbeat expired; reclaiming %d task(s)", nodeID, len(taskIDs)))
+			for _, taskID := range taskIDs {
+				r.reclaimTask(ctx, taskID)
+			}
+		} else {
+			r.emitEvent(ctx, "", "node_dead", fmt.Sprintf("Node %s heartbeat expired (no in-flight tasks)", nodeID))
+		}
+		// Clean up the (now-drained) node from the registry.
+		if err := r.nodes.Remove(ctx, nodeID); err != nil {
+			log.Printf("Reaper: error removing dead node %s: %v", nodeID, err)
 		}
 	}
 }
@@ -120,10 +164,11 @@ func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
 	}
 
 	// The script reads retries/max_retries/priority from the hash itself, so it
-	// is the source of truth for the retry-vs-dead-letter decision. We only pass
-	// the task ID; the loaded record is used for logging and the DLQ entry.
+	// is the source of truth for the retry-vs-dead-letter decision. We pass the
+	// task ID and the owning node's task set (from the record we loaded) so the
+	// reclaim also clears the task from that node's in-flight set.
 	result, err := r.reclaimCmd.Run(ctx, r.client,
-		[]string{store.KeyProcessing, store.KeyReady, store.TaskKey(taskID)},
+		[]string{store.KeyProcessing, store.KeyReady, store.TaskKey(taskID), store.NodeTasksKey(task.Owner)},
 		taskID,
 	).Text()
 	if err != nil {

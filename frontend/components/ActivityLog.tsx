@@ -17,6 +17,9 @@ const eventVariantMap: Record<string, "success" | "destructive" | "warning" | "i
   retrying: "warning",
   dead_lettered: "destructive",
   promoted: "secondary",
+  reclaimed: "warning",
+  node_dead: "destructive",
+  redriven: "info",
 };
 
 function EventRow({ event }: { event: TaskEvent }) {

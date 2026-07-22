@@ -30,6 +30,7 @@ type HandlerDeps struct {
 	WorkerState *store.WorkerStateStore
 	QueuePeek   *store.QueuePeekStore
 	Tasks       *store.TaskStore
+	Nodes       *store.NodeStore
 }
 
 type Handler struct {
@@ -207,6 +208,25 @@ func (h *Handler) GetWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, states)
+}
+
+// GetNodes returns the live cluster membership (P2.7): every registered node with
+// its liveness and in-flight task count. Dead nodes (heartbeat expired but not yet
+// reaped) appear with alive=false so the dashboard can show them graying out.
+func (h *Handler) GetNodes(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Nodes == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	nodes, err := h.deps.Nodes.ListNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if nodes == nil {
+		nodes = []model.Node{}
+	}
+	writeJSON(w, http.StatusOK, nodes)
 }
 
 func (h *Handler) GetQueues(w http.ResponseWriter, r *http.Request) {

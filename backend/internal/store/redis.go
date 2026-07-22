@@ -16,7 +16,14 @@ const (
 	KeyMetrics    = "taskqueue:metrics"
 	KeyEvents     = "taskqueue:events"
 	KeyWorkers    = "taskqueue:workers"
+	KeyNodes      = "taskqueue:nodes" // Phase 2: registry SET of known node IDs
 )
+
+// NodeHeartbeatKey returns the TTL key whose existence signals a node is alive.
+func NodeHeartbeatKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":hb" }
+
+// NodeTasksKey returns the SET key holding the task IDs a node currently leases.
+func NodeTasksKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":tasks" }
 
 func NewRedisClient(addr, password string) *redis.Client {
 	client := redis.NewClient(&redis.Options{

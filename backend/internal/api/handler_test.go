@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -102,5 +103,51 @@ func TestGetTaskByID(t *testing.T) {
 	srv.ServeHTTP(missRec, miss)
 	if missRec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing task, got %d", missRec.Code)
+	}
+}
+
+
+// GET /api/nodes returns registered cluster nodes with liveness. When no
+// NodeStore is wired (or none registered) it returns an empty array, never null.
+func TestGetNodes(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	nodes := store.NewNodeStore(client, 10*time.Second)
+	h := NewHandler(HandlerDeps{
+		Tasks: store.NewTaskStore(client),
+		Redis: client,
+		Nodes: nodes,
+	})
+	srv := NewRouter(h)
+
+	// Empty cluster → [].
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get nodes: status %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("expected [] for empty cluster, got %s", rec.Body.String())
+	}
+
+	// Register a node and verify it appears alive.
+	if err := nodes.Register(context.Background(), model.Node{
+		ID: "node-1", Hostname: "host-1", Capacity: 5, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	rec2 := httptest.NewRecorder()
+	srv.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	var got []model.Node
+	if err := json.Unmarshal(rec2.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode nodes: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "node-1" || !got[0].Alive {
+		t.Fatalf("expected 1 alive node, got %+v", got)
 	}
 }

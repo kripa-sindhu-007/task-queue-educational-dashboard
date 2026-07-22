@@ -51,13 +51,18 @@ type Broker interface {
 	ExtendLease(ctx context.Context, taskID string, extension time.Duration) error
 }
 
-// RedisBroker is the Redis-backed Broker with lease-based delivery.
+// RedisBroker is the Redis-backed Broker with lease-based delivery. Each broker
+// instance belongs to one node (worker process, or the server in in-process
+// mode); its nodeID is stamped on every task it leases so the reaper can
+// reclaim this node's work if it dies, and so Ack/Nack can fence against a lost
+// lease that was re-leased elsewhere.
 type RedisBroker struct {
 	client            *redis.Client
 	tasks             *store.TaskStore
 	ready             *queue.PriorityQueue
 	delayed           *queue.DelayedScheduler
 	visibilityTimeout time.Duration
+	nodeID            string
 	dequeueCmd        *redis.Script
 	ackCmd            *redis.Script
 	nackCmd           *redis.Script
@@ -70,6 +75,7 @@ func NewRedisBroker(
 	ready *queue.PriorityQueue,
 	delayed *queue.DelayedScheduler,
 	visibilityTimeout time.Duration,
+	nodeID string,
 ) *RedisBroker {
 	return &RedisBroker{
 		client:            client,
@@ -77,6 +83,7 @@ func NewRedisBroker(
 		ready:             ready,
 		delayed:           delayed,
 		visibilityTimeout: visibilityTimeout,
+		nodeID:            nodeID,
 		dequeueCmd:        redis.NewScript(dequeueScript),
 		ackCmd:            redis.NewScript(ackScript),
 		nackCmd:           redis.NewScript(nackScript),
@@ -102,8 +109,8 @@ func (b *RedisBroker) Dequeue(ctx context.Context) (*model.Task, error) {
 	deadline := time.Now().Add(b.visibilityTimeout).UnixMilli()
 
 	result, err := b.dequeueCmd.Run(ctx, b.client,
-		[]string{store.KeyReady, store.KeyProcessing, store.KeyTaskPrefix},
-		deadline,
+		[]string{store.KeyReady, store.KeyProcessing, store.KeyTaskPrefix, store.NodeTasksKey(b.nodeID)},
+		deadline, b.nodeID,
 	).Result()
 
 	if err == redis.Nil || result == nil {
@@ -138,8 +145,8 @@ func (b *RedisBroker) Dequeue(ctx context.Context) (*model.Task, error) {
 // re-delivered, which is expected under at-least-once semantics).
 func (b *RedisBroker) Ack(ctx context.Context, taskID string) error {
 	result, err := b.ackCmd.Run(ctx, b.client,
-		[]string{store.KeyProcessing, store.TaskKey(taskID)},
-		taskID,
+		[]string{store.KeyProcessing, store.TaskKey(taskID), store.NodeTasksKey(b.nodeID)},
+		taskID, b.nodeID,
 	).Int()
 	if err != nil {
 		return fmt.Errorf("ack task %s: %w", taskID, err)
@@ -157,8 +164,8 @@ func (b *RedisBroker) Ack(ctx context.Context, taskID string) error {
 // the reaper already handled redelivery.
 func (b *RedisBroker) Nack(ctx context.Context, taskID string, requeue bool) error {
 	result, err := b.nackCmd.Run(ctx, b.client,
-		[]string{store.KeyProcessing},
-		taskID,
+		[]string{store.KeyProcessing, store.TaskKey(taskID), store.NodeTasksKey(b.nodeID)},
+		taskID, b.nodeID,
 	).Int()
 	if err != nil {
 		return fmt.Errorf("nack task %s: %w", taskID, err)

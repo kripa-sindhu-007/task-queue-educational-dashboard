@@ -59,7 +59,7 @@ func TestReaper_ReclaimsExpiredLease(t *testing.T) {
 	simulateLeasedTask(ctx, t, client, tasks, task, expiredDeadline)
 
 	// Run the reaper with a short interval — use Start in a goroutine and cancel quickly
-	r := reaper.New(client, tasks, dl, events, metrics, reaper.Config{
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
 		Interval:  50 * time.Millisecond,
 		BatchSize: 10,
 	})
@@ -108,7 +108,7 @@ func TestReaper_DeadLettersWhenRetriesExhausted(t *testing.T) {
 	expiredDeadline := time.Now().Add(-5 * time.Second).UnixMilli()
 	simulateLeasedTask(ctx, t, client, tasks, task, expiredDeadline)
 
-	r := reaper.New(client, tasks, dl, events, metrics, reaper.Config{
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
 		Interval:  50 * time.Millisecond,
 		BatchSize: 10,
 	})
@@ -160,7 +160,7 @@ func TestReaper_IgnoresNonExpiredLeases(t *testing.T) {
 	futureDeadline := time.Now().Add(30 * time.Second).UnixMilli()
 	simulateLeasedTask(ctx, t, client, tasks, task, futureDeadline)
 
-	r := reaper.New(client, tasks, dl, events, metrics, reaper.Config{
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
 		Interval:  50 * time.Millisecond,
 		BatchSize: 10,
 	})
@@ -201,7 +201,7 @@ func TestReaper_BatchesLargeReclaims(t *testing.T) {
 		simulateLeasedTask(ctx, t, client, tasks, task, deadline)
 	}
 
-	r := reaper.New(client, tasks, dl, events, metrics, reaper.Config{
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
 		Interval:  50 * time.Millisecond,
 		BatchSize: 10, // only 10 per tick
 	})
@@ -238,7 +238,7 @@ func TestReaper_OrphanInProcessing(t *testing.T) {
 		Member: "task-orphan",
 	})
 
-	r := reaper.New(client, tasks, dl, events, metrics, reaper.Config{
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
 		Interval:  50 * time.Millisecond,
 		BatchSize: 10,
 	})
@@ -261,5 +261,75 @@ func TestReaper_OrphanInProcessing(t *testing.T) {
 	dlSize, _ := client.LLen(ctx, store.KeyDeadLetter).Result()
 	if dlSize != 0 {
 		t.Fatalf("expected DLQ=0 (orphan not dead-lettered), got %d", dlSize)
+	}
+}
+
+
+// TestReaper_DeadNodeEagerReclaim covers P2.3: a node whose heartbeat has
+// expired (still in the registry, no hb key) has ALL its in-flight tasks
+// reclaimed immediately — regardless of each task's individual lease deadline —
+// and the node is removed from the registry afterwards.
+func TestReaper_DeadNodeEagerReclaim(t *testing.T) {
+	client, tasks, dl, events, metrics := setup(t)
+	ctx := context.Background()
+	nodes := store.NewNodeStore(client, 10*time.Second)
+
+	const deadNode = "dead-node-1"
+	// Register the node in the registry but give it NO heartbeat key => dead.
+	client.SAdd(ctx, store.KeyNodes, deadNode)
+
+	// Two in-flight tasks owned by the dead node, both with a FUTURE lease
+	// deadline (so lease-expiry reclaim would NOT touch them — only dead-node
+	// reclaim should).
+	futureDeadline := time.Now().Add(1 * time.Hour).UnixMilli()
+	for _, id := range []string{"dn-task-1", "dn-task-2"} {
+		task := model.Task{
+			ID: id, Type: "test", Priority: 3, MaxRetries: 3, Retries: 0,
+			Status: model.StatusProcessing, Owner: deadNode, CreatedAt: time.Now(),
+		}
+		if err := tasks.Save(ctx, task); err != nil {
+			t.Fatalf("save %s: %v", id, err)
+		}
+		client.ZAdd(ctx, store.KeyProcessing, redis.Z{Score: float64(futureDeadline), Member: id})
+		client.SAdd(ctx, store.NodeTasksKey(deadNode), id)
+	}
+
+	r := reaper.New(client, tasks, dl, events, metrics, nodes, reaper.Config{
+		Interval:  50 * time.Millisecond,
+		BatchSize: 10,
+	})
+	reaperCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	r.Start(reaperCtx)
+
+	// Both tasks should be reclaimed to ready.
+	readySize, _ := client.ZCard(ctx, store.KeyReady).Result()
+	if readySize != 2 {
+		t.Fatalf("expected ready=2 after dead-node reclaim, got %d", readySize)
+	}
+	// Processing should be empty (both leases released).
+	procSize, _ := client.ZCard(ctx, store.KeyProcessing).Result()
+	if procSize != 0 {
+		t.Fatalf("expected processing=0, got %d", procSize)
+	}
+	// The dead node should be removed from the registry.
+	ids, _ := nodes.RegisteredIDs(ctx)
+	if len(ids) != 0 {
+		t.Fatalf("expected dead node removed from registry, got %v", ids)
+	}
+	// Its task set should be gone.
+	if n, _ := client.Exists(ctx, store.NodeTasksKey(deadNode)).Result(); n != 0 {
+		t.Fatal("expected dead node's task set deleted")
+	}
+	// Reclaimed tasks should have retries incremented and be pending.
+	for _, id := range []string{"dn-task-1", "dn-task-2"} {
+		retries, _ := client.HGet(ctx, store.TaskKey(id), "retries").Result()
+		if retries != "1" {
+			t.Fatalf("task %s: expected retries=1, got %s", id, retries)
+		}
+		owner, _ := client.HGet(ctx, store.TaskKey(id), "owner").Result()
+		if owner != "" {
+			t.Fatalf("task %s: expected owner cleared, got %q", id, owner)
+		}
 	}
 }

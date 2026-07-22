@@ -33,7 +33,7 @@ export interface SubmitTaskRequest {
 export interface TaskEvent {
   id: string;
   task_id: string;
-  type: "submitted" | "started" | "completed" | "failed" | "retrying" | "dead_lettered" | "promoted";
+  type: "submitted" | "started" | "completed" | "failed" | "retrying" | "dead_lettered" | "promoted" | "reclaimed" | "node_dead" | "redriven";
   worker_id: number;
   detail: string;
   timestamp: string;
@@ -44,6 +44,18 @@ export interface WorkerState {
   status: "idle" | "processing";
   task_id?: string;
   started_at?: string;
+}
+
+// Node is a standalone worker process in the cluster (Phase 2). Presence is
+// tracked via heartbeat TTL; `alive=false` means the heartbeat expired but the
+// reaper has not yet cleaned it up.
+export interface Node {
+  id: string;
+  hostname: string;
+  capacity: number;
+  started_at: string;
+  alive: boolean;
+  in_flight_tasks: number;
 }
 
 export interface DelayedEntry {

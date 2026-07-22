@@ -25,6 +25,7 @@ type Task struct {
 	Status     TaskStatus      `json:"status"`
 	CreatedAt  time.Time       `json:"created_at"`
 	Error      string          `json:"error,omitempty"`
+	Owner      string          `json:"owner,omitempty"` // node ID currently leasing the task (P2.2)
 }
 
 type Metrics struct {
@@ -55,6 +56,19 @@ type WorkerState struct {
 	Status    string    `json:"status"` // idle, processing
 	TaskID    string    `json:"task_id,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+}
+
+// Node is a standalone worker process that joins the cluster (P2.2). Identity is
+// {hostname}-{shortuuid}. Presence is tracked by a heartbeat TTL key; liveness
+// is derived from whether that key still exists.
+type Node struct {
+	ID        string    `json:"id"`
+	Hostname  string    `json:"hostname"`
+	Capacity  int       `json:"capacity"` // number of executor goroutines
+	StartedAt time.Time `json:"started_at"`
+	// Runtime fields, populated by NodeStore.ListNodes (not stored in the record):
+	Alive        bool  `json:"alive"`
+	InFlightTasks int64 `json:"in_flight_tasks"`
 }
 
 type DelayedEntry struct {

@@ -2,6 +2,7 @@ import TaskSubmissionPanel from "@/components/TaskSubmissionPanel";
 import MetricsPanel from "@/components/MetricsPanel";
 import FailedTasksPanel from "@/components/FailedTasksPanel";
 import TaskFlowDiagram from "@/components/TaskFlowDiagram";
+import NodePanel from "@/components/NodePanel";
 import WorkerPoolPanel from "@/components/WorkerPoolPanel";
 import QueuePanel from "@/components/QueuePanel";
 import ActivityLog from "@/components/ActivityLog";
@@ -25,7 +26,8 @@ export default function Home() {
         <MetricsPanel />
       </div>
 
-      {/* Row 3: Worker Pool (full width) */}
+      {/* Row 3: Cluster Nodes + Worker Pool (full width) */}
+      <NodePanel />
       <WorkerPoolPanel />
 
       {/* Row 4: Queue Contents + Activity Log */}

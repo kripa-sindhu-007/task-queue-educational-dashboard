@@ -23,7 +23,7 @@ func setup(t *testing.T) (*redis.Client, *broker.RedisBroker, *store.TaskStore) 
 	taskStore := store.NewTaskStore(client)
 	pq := queue.NewPriorityQueue(client, taskStore)
 	delayed := queue.NewDelayedScheduler(client, pq, taskStore, nil)
-	b := broker.NewRedisBroker(client, taskStore, pq, delayed, 30*time.Second)
+	b := broker.NewRedisBroker(client, taskStore, pq, delayed, 30*time.Second, "test-node")
 
 	return client, b, taskStore
 }

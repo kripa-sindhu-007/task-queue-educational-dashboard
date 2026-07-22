@@ -1,3 +1,9 @@
+// Command server hosts the HTTP API, the delayed scheduler and the reaper. In
+// single-binary/dev mode (RUN_WORKERS=true, the default) it also runs an
+// in-process worker node so `docker compose up` works with one backend
+// container. In distributed mode (RUN_WORKERS=false) task execution is handled
+// by separate `cmd/worker` processes and the server is API + scheduler + reaper
+// only.
 package main
 
 import (
@@ -11,6 +17,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/api"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/config"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/handler"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/reaper"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
@@ -34,15 +41,21 @@ func main() {
 	eventStore := store.NewEventStore(redisClient)
 	workerStateStore := store.NewWorkerStateStore(redisClient)
 	queuePeekStore := store.NewQueuePeekStore(redisClient, taskStore)
+	nodeStore := store.NewNodeStore(redisClient, cfg.HeartbeatTTL)
 
-	// Queue + broker
+	// Queue + broker. The server's broker carries its own node identity so that
+	// leases taken by in-process workers are attributed to (and reclaimable from)
+	// this node.
 	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
 	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore)
-	redisBroker := broker.NewRedisBroker(redisClient, taskStore, priorityQueue, delayedScheduler, cfg.VisibilityTimeout)
+	nodeID := worker.NewNodeID()
+	redisBroker := broker.NewRedisBroker(redisClient, taskStore, priorityQueue, delayedScheduler, cfg.VisibilityTimeout, nodeID)
 
-	// Workers
+	// Worker pool (always constructed so the API can report ActiveWorkers; only
+	// started when RUN_WORKERS is true).
 	executor := worker.NewExecutor(worker.ExecutorDeps{
 		Broker:       redisBroker,
+		Handlers:     handler.NewDefaultRegistry(),
 		Tasks:        taskStore,
 		Delayed:      delayedScheduler,
 		DeadLetter:   deadLetterStore,
@@ -54,7 +67,7 @@ func main() {
 	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore)
 
 	// API
-	handler := api.NewHandler(api.HandlerDeps{
+	apiHandler := api.NewHandler(api.HandlerDeps{
 		Queue:       priorityQueue,
 		Delayed:     delayedScheduler,
 		DeadLetter:  deadLetterStore,
@@ -65,8 +78,9 @@ func main() {
 		WorkerState: workerStateStore,
 		QueuePeek:   queuePeekStore,
 		Tasks:       taskStore,
+		Nodes:       nodeStore,
 	})
-	router := api.NewRouter(handler)
+	router := api.NewRouter(apiHandler)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.ServerPort),
@@ -83,15 +97,33 @@ func main() {
 	// Start delayed scheduler
 	go delayedScheduler.Start(ctx)
 
-	// Start reaper (reclaims expired leases from processing set)
-	taskReaper := reaper.New(redisClient, taskStore, deadLetterStore, eventStore, metricsStore, reaper.Config{
+	// Start reaper (reclaims expired leases and dead nodes' in-flight work)
+	taskReaper := reaper.New(redisClient, taskStore, deadLetterStore, eventStore, metricsStore, nodeStore, reaper.Config{
 		Interval:  cfg.ReaperInterval,
 		BatchSize: 100,
 	})
 	go taskReaper.Start(ctx)
 
-	// Start worker pool
-	pool.Start(ctx)
+	// Start in-process worker node when enabled (single-binary/dev mode).
+	var nodeDone chan struct{}
+	if cfg.RunWorkers {
+		node := worker.NewNode(worker.NodeConfig{
+			Nodes:             nodeStore,
+			Pool:              pool,
+			NodeID:            nodeID,
+			Hostname:          worker.Hostname(),
+			Capacity:          cfg.WorkerCount,
+			HeartbeatInterval: cfg.HeartbeatInterval,
+		})
+		nodeDone = make(chan struct{})
+		go func() {
+			defer close(nodeDone)
+			node.Run(ctx) // blocks: register -> heartbeat + pool -> drain -> deregister
+		}()
+		log.Printf("In-process worker node enabled (%d workers)", cfg.WorkerCount)
+	} else {
+		log.Println("RUN_WORKERS=false — server runs API + scheduler + reaper only")
+	}
 
 	// Start HTTP server
 	go func() {
@@ -112,7 +144,9 @@ func main() {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
-	// Wait for workers to finish in-progress tasks
-	pool.Wait()
+	// Wait for the in-process node to drain in-flight work and deregister.
+	if nodeDone != nil {
+		<-nodeDone
+	}
 	log.Println("Shutdown complete")
 }

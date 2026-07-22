@@ -15,6 +15,7 @@ func NewRouter(h *Handler) http.Handler {
 	// New educational endpoints
 	mux.HandleFunc("GET /api/events", h.GetEvents)
 	mux.HandleFunc("GET /api/workers", h.GetWorkers)
+	mux.HandleFunc("GET /api/nodes", h.GetNodes)
 	mux.HandleFunc("GET /api/queues", h.GetQueues)
 	mux.HandleFunc("GET /api/metrics/enhanced", h.GetEnhancedMetrics)
 	mux.HandleFunc("DELETE /api/flush", h.FlushData)

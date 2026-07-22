@@ -46,6 +46,7 @@ func taskToHash(t model.Task) map[string]any {
 		"status":      string(t.Status),
 		"created_at":  t.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"error":       t.Error,
+		"owner":       t.Owner,
 	}
 }
 
@@ -72,6 +73,7 @@ func hashToTask(v map[string]string) model.Task {
 		Status:     model.TaskStatus(v["status"]),
 		CreatedAt:  createdAt,
 		Error:      v["error"],
+		Owner:      v["owner"],
 	}
 }
 

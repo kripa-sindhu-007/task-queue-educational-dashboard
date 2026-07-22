@@ -41,8 +41,11 @@ func NewPool(
 func (p *Pool) Start(ctx context.Context) {
 	for i := 0; i < p.workerCount; i++ {
 		p.wg.Add(1)
-		// Initialize worker state as idle
-		p.workerState.Set(ctx, store.WorkerIdleState(i))
+		// Initialize worker state as idle (legacy per-goroutine view; optional —
+		// the standalone worker binary relies on node cards instead).
+		if p.workerState != nil {
+			p.workerState.Set(ctx, store.WorkerIdleState(i))
+		}
 		go p.worker(ctx, i)
 	}
 	log.Printf("Started %d workers (poll interval: %v)", p.workerCount, p.pollInterval)
