@@ -217,10 +217,10 @@ export default function TaskSubmissionPanel() {
 
           {toast && (
             <div
-              className={`toast rounded-lg px-4 py-2 text-sm border ${
+              className={`toast clay-chip px-4 py-2.5 text-sm font-bold font-display ${
                 toast.type === "success"
-                  ? "bg-emerald-500/10 border-emerald-500 text-emerald-400"
-                  : "bg-red-500/10 border-red-500 text-red-400"
+                  ? "bg-mint-soft text-mint-ink"
+                  : "bg-coral-soft text-coral-ink"
               }`}
             >
               {toast.msg}

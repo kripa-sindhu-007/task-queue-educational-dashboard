@@ -1,77 +1,211 @@
 @import "tailwindcss";
 
+/*
+  Claymorphism — playful educational dashboard.
+  Light lavender base + a vibrant "candy" state palette. Each queue stage/state
+  maps to a clay color; every color has an accessible `-ink` variant (>=4.5:1 on
+  white) for small text, and a soft `-soft` tint for chip backgrounds.
+*/
 @theme {
-  --color-background: #0a0a0a;
-  --color-foreground: #ededed;
-  --color-card: #141414;
-  --color-card-foreground: #ededed;
-  --color-popover: #141414;
-  --color-popover-foreground: #ededed;
-  --color-primary: #3b82f6;
+  /* Base surfaces */
+  --color-background: #edf0ff;
+  --color-foreground: #2c2a4a;
+  --color-card: #ffffff;
+  --color-card-foreground: #2c2a4a;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #2c2a4a;
+
+  --color-primary: #6366f1;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #1e1e1e;
-  --color-secondary-foreground: #ededed;
-  --color-muted: #1e1e1e;
-  --color-muted-foreground: #888888;
-  --color-accent: #1e1e1e;
-  --color-accent-foreground: #ededed;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #ededed;
-  --color-border: #2a2a2a;
-  --color-input: #2a2a2a;
-  --color-ring: #3b82f6;
-  --radius: 0.75rem;
+  --color-secondary: #eef1ff;
+  --color-secondary-foreground: #4338ca;
+  --color-muted: #eef0fb;
+  --color-muted-foreground: #5b5980;
+  --color-accent: #f97316;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #f43f5e;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #e2e3f5;
+  --color-input: #e2e3f5;
+  --color-ring: #6366f1;
+
+  --radius: 1.25rem;
+
+  /* Candy palette (base / accessible ink / soft tint) */
+  --color-sky: #0ea5e9;
+  --color-sky-ink: #0369a1;
+  --color-sky-soft: #e0f2fe;
+
+  --color-grape: #8b5cf6;
+  --color-grape-ink: #6d28d9;
+  --color-grape-soft: #ede9fe;
+
+  --color-mint: #10b981;
+  --color-mint-ink: #047857;
+  --color-mint-soft: #d1fae5;
+
+  --color-coral: #f43f5e;
+  --color-coral-ink: #be123c;
+  --color-coral-soft: #ffe4e6;
+
+  --color-sunny: #f59e0b;
+  --color-sunny-ink: #b45309;
+  --color-sunny-soft: #fef3c7;
+
+  --color-tangerine: #f97316;
+  --color-tangerine-ink: #c2410c;
+  --color-tangerine-soft: #ffedd5;
+
+  --color-bubble: #ec4899;
+  --color-bubble-ink: #be185d;
+  --color-bubble-soft: #fce7f3;
+
+  --color-aqua: #06b6d4;
+  --color-aqua-ink: #0e7490;
+  --color-aqua-soft: #cffafe;
+
+  --color-indigo-ink: #4338ca;
+
+  --font-display: var(--font-fredoka), "Fredoka", system-ui, sans-serif;
+  --font-body: var(--font-nunito), "Nunito", system-ui, sans-serif;
+}
+
+/* ---- Clay shadow recipes ---------------------------------------------------
+   Signature claymorphism: soft outer drop + inner top highlight + inner bottom
+   shadow, on chunky rounded corners. Tinted with indigo so surfaces feel warm. */
+:root {
+  --clay-shadow:
+    0 12px 26px -8px rgba(79, 70, 180, 0.28),
+    0 6px 10px -6px rgba(79, 70, 180, 0.18),
+    inset 0 6px 10px rgba(255, 255, 255, 0.9),
+    inset 0 -7px 12px rgba(120, 110, 210, 0.14);
+  --clay-shadow-sm:
+    0 6px 14px -6px rgba(79, 70, 180, 0.24),
+    inset 0 3px 6px rgba(255, 255, 255, 0.85),
+    inset 0 -4px 7px rgba(120, 110, 210, 0.14);
+  --clay-inset:
+    inset 0 3px 8px rgba(79, 70, 180, 0.20),
+    inset 0 -2px 4px rgba(255, 255, 255, 0.7);
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
-  background: var(--color-background);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 15% -10%, #f6e9ff 0%, transparent 55%),
+    radial-gradient(1000px 500px at 100% 0%, #e0f6ff 0%, transparent 50%),
+    var(--color-background);
+  background-attachment: fixed;
   color: var(--color-foreground);
-  line-height: 1.5;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Activity Log Terminal */
+h1, h2, h3, h4, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+/* ---- Clay surfaces ---------------------------------------------------------- */
+.clay {
+  background: var(--color-card);
+  border-radius: var(--radius);
+  box-shadow: var(--clay-shadow);
+}
+
+.clay-sm {
+  border-radius: 1rem;
+  box-shadow: var(--clay-shadow-sm);
+}
+
+.clay-inset {
+  background: #f3f4fd;
+  border-radius: 0.9rem;
+  box-shadow: var(--clay-inset);
+}
+
+/* Interactive clay (buttons, clickable cards): press + lift feedback */
+.clay-btn {
+  border-radius: 1rem;
+  box-shadow: var(--clay-shadow-sm);
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out,
+    filter 180ms ease-out;
+}
+.clay-btn:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.03);
+}
+.clay-btn:active {
+  transform: translateY(1px);
+  box-shadow: var(--clay-inset);
+}
+.clay-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--clay-shadow-sm), 0 0 0 4px rgba(99, 102, 241, 0.35);
+}
+
+/* Soft colored clay chip: pass a tint via --chip / --chip-ink */
+.clay-chip {
+  border-radius: 0.85rem;
+  box-shadow:
+    inset 0 2px 4px rgba(255, 255, 255, 0.85),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.06),
+    0 4px 10px -6px rgba(79, 70, 180, 0.25);
+}
+
+/* ---- Activity Log (light clay terminal) ------------------------------------ */
 .activity-log {
   font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
   font-size: 0.75rem;
-  line-height: 1.6;
+  line-height: 1.7;
   max-height: 400px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #333 transparent;
+  scrollbar-color: #c7c9ee transparent;
 }
-
 .activity-log::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
-
 .activity-log::-webkit-scrollbar-track {
   background: transparent;
 }
-
 .activity-log::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 3px;
+  background: #c7c9ee;
+  border-radius: 999px;
 }
 
-/* Worker pulse animation */
-@keyframes pulse-blue {
+/* ---- Animations ------------------------------------------------------------- */
+@keyframes clay-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+    box-shadow: var(--clay-shadow-sm), 0 0 0 0 rgba(99, 102, 241, 0.35);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
+    box-shadow: var(--clay-shadow-sm), 0 0 0 10px rgba(99, 102, 241, 0);
   }
 }
-
 .worker-pulse {
-  animation: pulse-blue 2s ease-in-out infinite;
+  animation: clay-pulse 2s ease-in-out infinite;
 }
 
-/* Toast */
+@keyframes float-soft {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.float-soft {
+  animation: float-soft 3s ease-in-out infinite;
+}
+
 .toast {
   position: fixed;
-  bottom: 1rem;
-  right: 1rem;
+  bottom: 1.5rem;
+  right: 1.5rem;
   z-index: 100;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .clay-btn:hover { transform: none; }
 }

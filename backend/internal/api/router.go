@@ -11,8 +11,6 @@ func NewRouter(h *Handler) http.Handler {
 	mux.HandleFunc("POST /api/tasks/failed/redrive", h.RedriveFailed)
 	mux.HandleFunc("GET /api/tasks/{id}", h.GetTask)
 	mux.HandleFunc("GET /api/health", h.HealthCheck)
-
-	// New educational endpoints
 	mux.HandleFunc("GET /api/events", h.GetEvents)
 	mux.HandleFunc("GET /api/workers", h.GetWorkers)
 	mux.HandleFunc("GET /api/nodes", h.GetNodes)
@@ -20,7 +18,6 @@ func NewRouter(h *Handler) http.Handler {
 	mux.HandleFunc("GET /api/metrics/enhanced", h.GetEnhancedMetrics)
 	mux.HandleFunc("DELETE /api/flush", h.FlushData)
 
-	// Apply middleware: Recovery -> Logging -> CORS -> routes
 	var handler http.Handler = mux
 	handler = CORS(handler)
 	handler = Logging(handler)

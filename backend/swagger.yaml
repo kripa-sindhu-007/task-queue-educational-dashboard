@@ -2,9 +2,10 @@ openapi: 3.0.3
 info:
   title: Task Queue API
   description: |
-    A Redis-backed priority task queue with delayed scheduling, dead-letter store,
-    worker pool management, and real-time event tracking.
-  version: 1.0.0
+    A Redis-backed distributed task processing platform: priority queue with
+    delayed scheduling, at-least-once delivery via leases + a reaper (Phase 1),
+    and standalone worker nodes with heartbeat failure detection (Phase 2).
+  version: 2.0.0
   contact:
     name: Weekend Project
 
@@ -14,11 +15,13 @@ servers:
 
 tags:
   - name: Tasks
-    description: Task submission and failed task retrieval
+    description: Task submission, retrieval, and failed-task handling
   - name: Metrics
     description: Queue and processing metrics
   - name: Monitoring
     description: Health checks, events, workers, and queue inspection
+  - name: Cluster
+    description: Distributed worker-node membership
   - name: Admin
     description: Administrative operations
 
@@ -31,6 +34,12 @@ paths:
         Enqueues a task into the priority queue. If `delay` > 0, the task is
         scheduled in the delayed queue and promoted to the ready queue after
         the delay elapses.
+
+        `id` is optional: when omitted the server generates a unique ID (so two
+        submissions with identical fields are distinct tasks). A client-supplied
+        `id` acts as an idempotency key — resubmitting an existing id returns
+        409 Conflict. `type` selects the handler (`sleep`, `http_fetch`, `hash`);
+        an empty type defaults to `sleep`.
       requestBody:
         required: true
         content:
@@ -39,16 +48,25 @@ paths:
               $ref: "#/components/schemas/SubmitTaskRequest"
             examples:
               immediate:
-                summary: Immediate task
+                summary: Immediate task (server-generated id)
                 value:
-                  id: "task-001"
+                  type: "sleep"
                   priority: 5
                   delay: 0
                   max_retries: 3
+              httpFetch:
+                summary: HTTP fetch task
+                value:
+                  type: "http_fetch"
+                  payload: { "url": "https://example.com" }
+                  priority: 3
+                  max_retries: 2
               delayed:
-                summary: Delayed task (10s)
+                summary: Delayed task (10s) with explicit id
                 value:
                   id: "task-002"
+                  type: "hash"
+                  payload: { "input": "abc", "rounds": 50000 }
                   priority: 1
                   delay: 10
                   max_retries: 2
@@ -60,20 +78,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "400":
-          description: Invalid request body or missing required fields
+          description: Invalid request body
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               examples:
-                missingId:
-                  value:
-                    error: "id is required"
                 invalidJson:
                   value:
                     error: "invalid JSON"
+        "409":
+          description: A task with the supplied client id already exists (idempotent enqueue)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: 'task with id "task-002" already exists'
         "500":
           description: Internal server error (Redis failure)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get a task by ID
+      description: Returns the canonical task record for the given ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Task identifier
+      responses:
+        "200":
+          description: The canonical task record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          description: No task exists with that ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "task not found"
+        "500":
+          description: Internal server error
           content:
             application/json:
               schema:
@@ -106,6 +163,42 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/FailedTask"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/failed/redrive:
+    post:
+      tags: [Tasks]
+      summary: Redrive failed tasks
+      description: |
+        Drains the dead-letter queue and re-enqueues every task back onto the
+        ready queue with `retries` reset to 0 and status set to pending.
+      responses:
+        "200":
+          description: Redrive result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redriven:
+                    type: integer
+                    description: Number of tasks moved back to ready
+                  total:
+                    type: integer
+                    description: Number of tasks drained from the DLQ
+                  message:
+                    type: string
+                    description: Present when the DLQ was empty
+              examples:
+                redriven:
+                  value: { redriven: 12, total: 12 }
+                empty:
+                  value: { redriven: 0, message: "dead-letter queue is empty" }
         "500":
           description: Internal server error
           content:
@@ -257,6 +350,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/nodes:
+    get:
+      tags: [Cluster]
+      summary: Get cluster nodes
+      description: |
+        Returns every registered worker node with liveness and in-flight task
+        count. Dead nodes (heartbeat expired but not yet reaped) are included
+        with `alive: false`. Returns an empty array when no nodes are registered.
+      responses:
+        "200":
+          description: List of cluster nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Node"
+              example:
+                - id: "worker-1-a1b2c3d4e5f6"
+                  hostname: "worker-1"
+                  capacity: 5
+                  started_at: "2026-07-11T10:30:00Z"
+                  alive: true
+                  in_flight_tasks: 3
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/queues:
     get:
       tags: [Monitoring]
@@ -281,8 +405,9 @@ paths:
       tags: [Admin]
       summary: Flush all data
       description: |
-        **Destructive operation.** Deletes all keys from Redis including
-        ready queue, delayed queue, dead-letter store, metrics, events, and worker states.
+        **Destructive operation.** Deletes all keys from Redis including the
+        ready, delayed, and processing queues, dead-letter store, metrics, events,
+        worker states, and canonical task records.
       responses:
         "200":
           description: All data flushed
@@ -299,13 +424,24 @@ components:
   schemas:
     SubmitTaskRequest:
       type: object
-      required:
-        - id
       properties:
         id:
           type: string
-          description: Unique task identifier
+          description: |
+            Optional unique task identifier. When omitted the server generates
+            one. When supplied it acts as an idempotency key (duplicate → 409).
           example: "task-001"
+        type:
+          type: string
+          description: Handler type. Empty defaults to "sleep".
+          enum: [sleep, http_fetch, hash]
+          example: "sleep"
+        payload:
+          type: object
+          description: |
+            Handler-specific input, passed through opaquely. e.g. http_fetch
+            expects `{ "url": "..." }`; hash expects `{ "input": "...", "rounds": N }`.
+          additionalProperties: true
         priority:
           type: integer
           description: Task priority (higher = processed first)
@@ -328,6 +464,14 @@ components:
         id:
           type: string
           example: "task-001"
+        type:
+          type: string
+          description: Handler type
+          example: "sleep"
+        payload:
+          type: object
+          description: Handler-specific input (opaque)
+          additionalProperties: true
         priority:
           type: integer
           example: 5
@@ -351,6 +495,10 @@ components:
         error:
           type: string
           description: Error message (only present on failed tasks)
+        owner:
+          type: string
+          description: ID of the node currently leasing the task (empty when not in flight)
+          example: "worker-1-a1b2c3d4e5f6"
 
     FailedTask:
       type: object
@@ -414,11 +562,11 @@ components:
           example: "task-001"
         type:
           type: string
-          enum: [submitted, started, completed, failed, retrying, dead_lettered, promoted]
+          enum: [submitted, started, completed, failed, retrying, dead_lettered, promoted, reclaimed, node_dead, redriven]
           example: "submitted"
         worker_id:
           type: integer
-          description: Worker ID that processed the event (-1 for submission events)
+          description: Worker ID that processed the event (-1 for submission, scheduler, and reaper events)
           example: 2
         detail:
           type: string
@@ -445,6 +593,34 @@ components:
           type: string
           format: date-time
           description: Only present when status is processing
+
+    Node:
+      type: object
+      description: A standalone worker process in the cluster (Phase 2).
+      properties:
+        id:
+          type: string
+          description: Node identity, {hostname}-{shorthex}
+          example: "worker-1-a1b2c3d4e5f6"
+        hostname:
+          type: string
+          example: "worker-1"
+        capacity:
+          type: integer
+          description: Number of executor goroutines on the node
+          example: 5
+        started_at:
+          type: string
+          format: date-time
+        alive:
+          type: boolean
+          description: Whether the node's heartbeat key is still present
+          example: true
+        in_flight_tasks:
+          type: integer
+          format: int64
+          description: Tasks the node currently holds leased
+          example: 3
 
     DelayedEntry:
       type: object

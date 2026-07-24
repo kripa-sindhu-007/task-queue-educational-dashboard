@@ -21,29 +21,41 @@ function AnimatedNumber({ value }: { value: number }) {
   );
 }
 
+type Tone = "grape" | "sunny" | "sky" | "aqua";
+
+const toneClasses: Record<Tone, { chip: string; text: string }> = {
+  grape: { chip: "bg-grape-soft", text: "text-grape-ink" },
+  sunny: { chip: "bg-sunny-soft", text: "text-sunny-ink" },
+  sky: { chip: "bg-sky-soft", text: "text-sky-ink" },
+  aqua: { chip: "bg-aqua-soft", text: "text-aqua-ink" },
+};
+
 function FlowStage({
   label,
   count,
-  color,
+  tone,
 }: {
   label: string;
   count: number;
-  color: string;
+  tone: Tone;
 }) {
+  const c = toneClasses[tone];
   return (
-    <div className={`flex flex-col items-center gap-1 rounded-lg border border-border bg-card px-4 py-3 min-w-[100px]`}>
-      <span className="text-2xl font-bold" style={{ color }}>
+    <div className={`clay-chip flex flex-col items-center gap-1 px-5 py-3 min-w-[104px] ${c.chip}`}>
+      <span className={`font-display text-2xl font-bold ${c.text}`}>
         <AnimatedNumber value={count} />
       </span>
-      <span className="text-xs text-muted-foreground whitespace-nowrap">{label}</span>
+      <span className="text-[11px] font-bold text-foreground/60 whitespace-nowrap">
+        {label}
+      </span>
     </div>
   );
 }
 
 function Arrow() {
   return (
-    <div className="flex items-center text-muted-foreground">
-      <ArrowRight className="w-5 h-5" />
+    <div className="flex items-center text-primary/50">
+      <ArrowRight className="w-5 h-5" strokeWidth={2.5} />
     </div>
   );
 }
@@ -59,23 +71,23 @@ export default function TaskFlowDiagram() {
         <CardTitle>Task Flow Pipeline</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 justify-center flex-wrap sm:flex-nowrap">
-          <FlowStage label="Submitted" count={metrics.total_submitted} color="#8b5cf6" />
+        <div className="flex items-center gap-2.5 overflow-x-auto pb-2 justify-center flex-wrap sm:flex-nowrap">
+          <FlowStage label="Submitted" count={metrics.total_submitted} tone="grape" />
           <Arrow />
-          <FlowStage label="Delayed Queue" count={metrics.delayed_queue_size} color="#f59e0b" />
+          <FlowStage label="Delayed Queue" count={metrics.delayed_queue_size} tone="sunny" />
           <Arrow />
-          <FlowStage label="Ready Queue" count={metrics.queue_size} color="#3b82f6" />
+          <FlowStage label="Ready Queue" count={metrics.queue_size} tone="sky" />
           <Arrow />
-          <FlowStage label="Workers Active" count={metrics.active_workers} color="#06b6d4" />
+          <FlowStage label="Workers Active" count={metrics.active_workers} tone="aqua" />
           <Arrow />
-          <div className="flex flex-col gap-1">
-            <Badge variant="success" className="text-xs justify-center">
+          <div className="flex flex-col gap-1.5">
+            <Badge variant="success" className="justify-center">
               Completed: {metrics.total_processed}
             </Badge>
-            <Badge variant="warning" className="text-xs justify-center">
+            <Badge variant="warning" className="justify-center">
               Retried: {metrics.total_retries}
             </Badge>
-            <Badge variant="destructive" className="text-xs justify-center">
+            <Badge variant="destructive" className="justify-center">
               Dead Letter: {metrics.dead_letter_size}
             </Badge>
           </div>

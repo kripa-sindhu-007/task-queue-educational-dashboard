@@ -26,7 +26,7 @@ function CountdownTimer({ executeAt }: { executeAt: number }) {
   }, [executeAt]);
 
   return (
-    <span className="text-xs tabular-nums text-amber-400">
+    <span className="font-display text-xs font-bold tabular-nums text-sunny-ink">
       {remaining}s
     </span>
   );
@@ -38,9 +38,9 @@ function ReadyTaskRow({ task }: { task: Task }) {
       initial={{ opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 20 }}
-      className="flex items-center justify-between py-1.5 px-2 rounded bg-background/50"
+      className="flex items-center justify-between py-1.5 px-2.5 rounded-xl bg-muted"
     >
-      <code className="text-xs text-foreground truncate max-w-[140px]">{task.id}</code>
+      <code className="text-xs font-semibold text-foreground truncate max-w-[140px]">{task.id}</code>
       <Badge variant="info" className="text-[10px]">P{task.priority}</Badge>
     </motion.div>
   );
@@ -52,9 +52,9 @@ function DelayedTaskRow({ entry }: { entry: DelayedEntry }) {
       initial={{ opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 20 }}
-      className="flex items-center justify-between py-1.5 px-2 rounded bg-background/50"
+      className="flex items-center justify-between py-1.5 px-2.5 rounded-xl bg-muted"
     >
-      <code className="text-xs text-foreground truncate max-w-[120px]">{entry.task.id}</code>
+      <code className="text-xs font-semibold text-foreground truncate max-w-[120px]">{entry.task.id}</code>
       <div className="flex items-center gap-2">
         <Badge variant="info" className="text-[10px]">P{entry.task.priority}</Badge>
         <CountdownTimer executeAt={entry.execute_at} />
@@ -79,8 +79,8 @@ export default function QueuePanel() {
       <CardContent className="space-y-4">
         <div>
           <div className="flex items-center gap-1.5 mb-2">
-            <Zap className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-xs font-medium text-muted-foreground">Ready Queue ({ready.length})</span>
+            <Zap className="w-4 h-4 text-sky" strokeWidth={2.5} />
+            <span className="text-xs font-bold text-foreground/70">Ready Queue ({ready.length})</span>
           </div>
           <div className="space-y-1 max-h-[200px] overflow-y-auto">
             <AnimatePresence mode="popLayout">
@@ -95,8 +95,8 @@ export default function QueuePanel() {
 
         <div className="border-t border-border pt-3">
           <div className="flex items-center gap-1.5 mb-2">
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-xs font-medium text-muted-foreground">Delayed Queue ({delayed.length})</span>
+            <Clock className="w-4 h-4 text-sunny" strokeWidth={2.5} />
+            <span className="text-xs font-bold text-foreground/70">Delayed Queue ({delayed.length})</span>
           </div>
           <div className="space-y-1 max-h-[200px] overflow-y-auto">
             <AnimatePresence mode="popLayout">

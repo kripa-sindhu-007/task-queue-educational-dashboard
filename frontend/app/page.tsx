@@ -3,40 +3,46 @@ import MetricsPanel from "@/components/MetricsPanel";
 import FailedTasksPanel from "@/components/FailedTasksPanel";
 import TaskFlowDiagram from "@/components/TaskFlowDiagram";
 import NodePanel from "@/components/NodePanel";
-import WorkerPoolPanel from "@/components/WorkerPoolPanel";
 import QueuePanel from "@/components/QueuePanel";
 import ActivityLog from "@/components/ActivityLog";
+import { Boxes } from "lucide-react";
 
 export default function Home() {
   return (
-    <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold">Task Queue Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          An educational view into distributed task processing
-        </p>
-      </div>
+    <div className="max-w-[1400px] mx-auto px-4 py-8 space-y-5">
+      <header className="flex items-center gap-4">
+        <div className="clay-chip flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-grape text-white float-soft">
+          <Boxes className="h-7 w-7" />
+        </div>
+        <div>
+          <h1 className="font-display text-3xl font-bold tracking-tight text-foreground">
+            Task Queue Playground
+          </h1>
+          <p className="text-sm text-muted-foreground font-medium">
+            Watch tasks flow through a distributed queue — submit, process, retry, recover.
+          </p>
+        </div>
+      </header>
 
-      {/* Row 1: Task Flow Diagram (full width) */}
+      {/* Task Flow Diagram (full width) */}
       <TaskFlowDiagram />
 
-      {/* Row 2: Submit Form + Enhanced Metrics */}
-      <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-4">
+      {/* Submit Form + Enhanced Metrics */}
+      <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5">
         <TaskSubmissionPanel />
         <MetricsPanel />
       </div>
 
-      {/* Row 3: Cluster Nodes + Worker Pool (full width) */}
+      {/* Cluster Nodes + Workers (full width) */}
       <NodePanel />
-      <WorkerPoolPanel />
 
-      {/* Row 4: Queue Contents + Activity Log */}
-      <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-4">
+      {/* Queue Contents + Activity Log */}
+      <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5">
         <QueuePanel />
         <ActivityLog />
       </div>
 
-      {/* Row 5: Failed Tasks Table (full width) */}
+      {/* Failed Tasks Table (full width) */}
       <FailedTasksPanel />
     </div>
   );

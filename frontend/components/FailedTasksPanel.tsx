@@ -51,7 +51,7 @@ export default function FailedTasksPanel() {
                 {list.map((ft, i) => (
                   <tr key={`${ft.task.id}-${i}`} className="border-b border-border/50">
                     <td className="py-2 px-2">
-                      <code className="text-blue-300">{ft.task.id}</code>
+                      <code className="font-semibold text-sky-ink">{ft.task.id}</code>
                     </td>
                     <td className="py-2 px-2">{ft.task.priority}</td>
                     <td className="py-2 px-2">
