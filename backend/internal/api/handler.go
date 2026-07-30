@@ -186,8 +186,6 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
 }
 
-// --- Educational endpoints ---
-
 func (h *Handler) GetEvents(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64)
 	if limit <= 0 {

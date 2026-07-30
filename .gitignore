@@ -23,3 +23,7 @@ Thumbs.db
 
 # Docker
 redis-data/
+
+
+# TypeScript incremental build info
+frontend/tsconfig.tsbuildinfo
