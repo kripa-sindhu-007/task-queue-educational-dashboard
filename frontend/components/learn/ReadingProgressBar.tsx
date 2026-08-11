@@ -36,10 +36,10 @@ export default function ReadingProgressBar() {
   return (
     <div
       aria-hidden="true"
-      className="fixed inset-x-0 top-0 z-[60] h-1.5 bg-transparent"
+      className="fixed inset-x-0 top-0 z-[60] h-1 bg-border/30"
     >
       <div
-        className="h-full bg-gradient-to-r from-primary via-grape to-bubble transition-[width] duration-150 ease-out motion-reduce:transition-none"
+        className="h-full bg-primary transition-[width] duration-150 ease-out motion-reduce:transition-none"
         style={{ width: `${progress}%` }}
       />
     </div>

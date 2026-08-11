@@ -84,7 +84,7 @@ client's command running in between**.
   ── Redis single command loop (one thread) ─────────────────────────▶
      ... │  ██████ your Lua script (many redis.call) ██████  │ ...
          │  nothing else runs until the whole script returns │
-     other clients wait here ───────────────────────────────┘
+     other clients wait here ──────────────────────────────-─┘
 \`\`\`
 
 So a Lua script is the unit of atomicity we wanted. Inside it we can ZPOPMIN,

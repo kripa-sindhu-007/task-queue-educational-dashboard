@@ -1,86 +1,93 @@
 "use client";
 
 import Link from "next/link";
-import { GraduationCap, Clock, CheckCircle2, Lock } from "lucide-react";
+import { GraduationCap, Clock, CheckCircle2, Lock, ArrowRight } from "lucide-react";
 import {
   getChaptersByPhase,
   phaseTone,
   type Chapter,
 } from "@/lib/learn";
 import { useReadChapters } from "@/lib/learnProgress";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 function ChapterCard({ chapter, read }: { chapter: Chapter; read: boolean }) {
   const tone = phaseTone[chapter.phaseGroup];
   const available = chapter.status === "available";
 
-  const inner = (
-    <>
-      <div className="flex items-start gap-3">
-        <span
-          className={cn(
-            "clay-chip flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-display text-base font-bold",
-            tone.chip,
-            tone.ink
-          )}
-          aria-hidden="true"
-        >
-          {chapter.order}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="font-display text-lg font-semibold leading-snug text-foreground">
-              {chapter.title}
-            </h3>
-            {available && read && (
-              <CheckCircle2
-                className="h-4 w-4 shrink-0 text-mint-ink"
-                aria-label="Read"
-              />
+  const body = (
+    <Card
+      className={cn(
+        "h-full gap-0 py-0 transition-colors",
+        available
+          ? "group-hover:border-primary/50 group-focus-visible:border-primary/50"
+          : "opacity-60"
+      )}
+    >
+      <CardHeader className="gap-0 px-5 pt-5">
+        <div className="flex items-start gap-3">
+          <span
+            className={cn(
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg font-mono text-sm font-bold ring-1 ring-inset",
+              tone.chip,
+              tone.ink,
+              tone.ring
             )}
+            aria-hidden="true"
+          >
+            {chapter.order}
+          </span>
+          <div className="min-w-0 flex-1">
+            <CardTitle className="flex items-start gap-2 text-base leading-snug">
+              <span className="min-w-0 flex-1">{chapter.title}</span>
+              {available && read && (
+                <CheckCircle2
+                  className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                  aria-label="Read"
+                />
+              )}
+            </CardTitle>
+            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+              {chapter.subtitle}
+            </p>
           </div>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {chapter.subtitle}
-          </p>
         </div>
-      </div>
+      </CardHeader>
 
-      <div className="mt-4 flex items-center gap-3 text-xs font-semibold">
-        <span className="inline-flex items-center gap-1 text-muted-foreground">
+      <CardContent className="mt-4 flex items-center justify-between px-5 pb-5">
+        <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
           <Clock className="h-3.5 w-3.5" aria-hidden="true" />
           {chapter.readingMinutes} min read
         </span>
         {available ? (
-          <span className={cn("clay-chip rounded-lg px-2 py-0.5", tone.chip, tone.ink)}>
-            {read ? "Read" : "Start"}
+          <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary">
+            {read ? "Re-read" : "Start"}
+            <ArrowRight
+              className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+              aria-hidden="true"
+            />
           </span>
         ) : (
-          <span className="clay-chip inline-flex items-center gap-1 rounded-lg bg-muted px-2 py-0.5 text-muted-foreground">
+          <Badge variant="outline" className="gap-1 text-muted-foreground">
             <Lock className="h-3 w-3" aria-hidden="true" />
             Coming soon
-          </span>
+          </Badge>
         )}
-      </div>
-    </>
+      </CardContent>
+    </Card>
   );
 
   if (!available) {
-    return (
-      <div
-        aria-disabled="true"
-        className="clay rounded-2xl bg-card p-5 opacity-55"
-      >
-        {inner}
-      </div>
-    );
+    return <div aria-disabled="true">{body}</div>;
   }
 
   return (
     <Link
       href={`/learn/${chapter.slug}`}
-      className="clay-btn block rounded-2xl bg-card p-5"
+      className="group block rounded-xl focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
     >
-      {inner}
+      {body}
     </Link>
   );
 }
@@ -90,20 +97,25 @@ export default function LearnIndexPage() {
   const { isRead } = useReadChapters();
 
   return (
-    <div className="mx-auto max-w-[1000px] px-4 py-8 space-y-8">
-      <header className="flex items-start gap-4">
-        <div className="clay-chip flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-grape to-primary text-white float-soft">
-          <GraduationCap className="h-7 w-7" />
+    <div className="mx-auto max-w-[1000px] px-4 py-10 space-y-12">
+      <header>
+        <div className="flex items-center gap-4">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-primary">
+            <GraduationCap className="h-6 w-6" aria-hidden="true" />
+          </span>
+          <div>
+            <p className="font-mono text-xs uppercase tracking-[0.12em] text-primary">
+              Curriculum
+            </p>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight text-foreground">
+              Learn
+            </h1>
+          </div>
         </div>
-        <div>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-foreground">
-            Learn
-          </h1>
-          <p className="text-sm text-muted-foreground font-medium">
-            A guided path from "what is a task queue?" to the distributed
-            internals powering this playground.
-          </p>
-        </div>
+        <p className="mt-4 max-w-2xl text-muted-foreground">
+          A guided path from &ldquo;what is a task queue?&rdquo; to the
+          distributed internals powering this playground.
+        </p>
       </header>
 
       {groups.map(({ phase, chapters }) => {
@@ -111,24 +123,25 @@ export default function LearnIndexPage() {
         const tone = phaseTone[phase];
         return (
           <section key={phase} aria-labelledby={`phase-${phase}`}>
-            <div className="mb-3 flex items-center gap-2">
-              <span
+            <div className="mb-4 flex items-center gap-3">
+              <Badge
                 className={cn(
-                  "clay-chip rounded-lg px-3 py-1 font-display text-sm font-bold",
+                  "rounded-md font-mono uppercase tracking-[0.1em] ring-1 ring-inset",
                   tone.chip,
-                  tone.ink
+                  tone.ink,
+                  tone.ring
                 )}
               >
                 {phase}
-              </span>
+              </Badge>
               <span
                 id={`phase-${phase}`}
-                className="text-xs font-semibold text-muted-foreground"
+                className="font-mono text-xs text-muted-foreground"
               >
                 {chapters.length} chapter{chapters.length === 1 ? "" : "s"}
               </span>
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {chapters.map((chapter) => (
                 <ChapterCard
                   key={chapter.slug}

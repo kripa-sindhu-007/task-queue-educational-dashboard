@@ -2,13 +2,15 @@
 
 import { useState } from "react";
 import { HelpCircle, ChevronDown, CheckCircle2 } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { RevisionQuestion } from "@/lib/learn";
 
 /**
- * Self-check cards. Each question shows a "Show answer" chip; tapping it reveals
- * an ideal, candidate-quality model answer so the learner can check their own.
- * The whole row is the toggle (one accessible control); the chip reflects state.
+ * Self-check cards. Each question shows a "Show answer" button; tapping it
+ * reveals an ideal, candidate-quality model answer so the learner can check
+ * their own. The button is the single accessible control per question.
  */
 export default function RevisionQuestions({
   questions,
@@ -30,12 +32,12 @@ export default function RevisionQuestions({
     <section aria-labelledby="revision-heading" className="mt-10">
       <h2
         id="revision-heading"
-        className="font-display text-2xl font-bold tracking-tight text-foreground mb-1 flex items-center gap-2"
+        className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-foreground"
       >
-        <HelpCircle className="h-6 w-6 text-grape-ink" aria-hidden="true" />
+        <HelpCircle className="h-6 w-6 text-primary" aria-hidden="true" />
         Revision Questions
       </h2>
-      <p className="text-sm text-muted-foreground mb-4">
+      <p className="mb-5 text-sm text-muted-foreground">
         Answer each one in your head first, then reveal the model answer to check
         yourself.
       </p>
@@ -46,51 +48,48 @@ export default function RevisionQuestions({
           const answerId = `revision-answer-${i}`;
           return (
             <li key={i}>
-              <button
-                type="button"
-                onClick={() => toggle(i)}
-                aria-expanded={isOpen}
-                aria-controls={answerId}
-                className="clay-btn flex w-full items-center gap-3 bg-card px-4 py-3 text-left"
-              >
-                <span className="clay-chip flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-grape-soft font-display text-sm font-bold text-grape-ink">
-                  {i + 1}
-                </span>
-                <span className="min-w-0 flex-1 text-[15px] font-semibold text-foreground">
-                  {item.q}
-                </span>
-                <span
-                  className={cn(
-                    "clay-chip inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold whitespace-nowrap transition-colors duration-200 motion-reduce:transition-none",
-                    isOpen
-                      ? "bg-mint-soft text-mint-ink"
-                      : "bg-grape-soft text-grape-ink"
-                  )}
-                >
-                  <ChevronDown
-                    className={cn(
-                      "h-3.5 w-3.5 transition-transform duration-200 motion-reduce:transition-none",
-                      isOpen && "rotate-180"
-                    )}
-                    aria-hidden="true"
-                  />
-                  {isOpen ? "Hide answer" : "Show answer"}
-                </span>
-              </button>
-              {isOpen && (
-                <div
-                  id={answerId}
-                  className="clay-inset mt-2 rounded-xl px-4 py-3"
-                >
-                  <div className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-mint-ink">
-                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                    Model answer
-                  </div>
-                  <p className="text-sm leading-6 text-foreground/80">
-                    {item.a}
+              <Card className="gap-0 overflow-hidden py-0">
+                <div className="flex items-start gap-3 p-4">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted font-mono text-sm font-bold text-foreground">
+                    {i + 1}
+                  </span>
+                  <p className="min-w-0 flex-1 pt-0.5 text-[15px] font-medium text-foreground">
+                    {item.q}
                   </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => toggle(i)}
+                    aria-expanded={isOpen}
+                    aria-controls={answerId}
+                    className="shrink-0"
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "h-3.5 w-3.5 transition-transform duration-200 motion-reduce:transition-none",
+                        isOpen && "rotate-180"
+                      )}
+                      aria-hidden="true"
+                    />
+                    {isOpen ? "Hide answer" : "Show answer"}
+                  </Button>
                 </div>
-              )}
+                {isOpen && (
+                  <div
+                    id={answerId}
+                    className="border-t border-border border-l-4 border-l-primary bg-muted/40 px-4 py-3"
+                  >
+                    <div className="mb-1.5 flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.1em] text-primary">
+                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                      Model answer
+                    </div>
+                    <p className="text-sm leading-6 text-foreground/85">
+                      {item.a}
+                    </p>
+                  </div>
+                )}
+              </Card>
             </li>
           );
         })}

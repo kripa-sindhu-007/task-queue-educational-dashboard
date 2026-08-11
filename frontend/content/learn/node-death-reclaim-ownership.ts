@@ -70,19 +70,19 @@ order:
 
 \`\`\`text
   every 5s (ReaperInterval):
-    ┌─────────────────────────────────────────────┐
-    │ 1. reapDeadNodes()   ← eager path, runs FIRST │
-    │      for each node in registry whose          │
-    │      heartbeat key is gone:                   │
-    │        read node:{id}:tasks  (its in-flight)  │
-    │        emit node_dead                         │
-    │        reclaim EACH task  → ready (Retries++) │
-    │        remove node from registry              │
-    ├─────────────────────────────────────────────┤
+    ┌─────────────────────────────────────────────---┐
+    │ 1. reapDeadNodes()   ← eager path, runs FIRST  │
+    │      for each node in registry whose           │
+    │      heartbeat key is gone:                    │
+    │        read node:{id}:tasks  (its in-flight)   │
+    │        emit node_dead                          │
+    │        reclaim EACH task  → ready (Retries++)  │
+    │        remove node from registry               │
+    ├───────────────────────────────────────────--──-┤
     │ 2. reap()            ← lease sweep, runs SECOND│
     │      ZRANGEBYSCORE processing  -inf .. now     │
     │      reclaim each expired lease (batched)      │
-    └─────────────────────────────────────────────┘
+    └─────────────────────────────────────────────---┘
 \`\`\`
 
 The order matters. Running \`reapDeadNodes\` **before** the lease sweep means that

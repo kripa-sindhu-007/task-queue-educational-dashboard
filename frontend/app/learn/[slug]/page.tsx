@@ -21,6 +21,10 @@ import ReadingProgressBar from "@/components/learn/ReadingProgressBar";
 import ChapterReadMarker from "@/components/learn/ChapterReadMarker";
 import RevisionQuestions from "@/components/learn/RevisionQuestions";
 import InterviewSummary from "@/components/learn/InterviewSummary";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
 export function generateStaticParams() {
@@ -31,7 +35,7 @@ function BackLink() {
   return (
     <Link
       href="/learn"
-      className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground"
+      className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
     >
       <ArrowLeft className="h-4 w-4" aria-hidden="true" />
       Back to Learn
@@ -39,40 +43,50 @@ function BackLink() {
   );
 }
 
-function ComingSoonState({ chapter }: { chapter: Chapter }) {
+function PhaseBadge({ chapter }: { chapter: Chapter }) {
   const tone = phaseTone[chapter.phaseGroup];
+  return (
+    <Badge
+      className={cn(
+        "rounded-md font-mono uppercase tracking-[0.1em] ring-1 ring-inset",
+        tone.chip,
+        tone.ink,
+        tone.ring
+      )}
+    >
+      {chapter.phaseGroup}
+    </Badge>
+  );
+}
+
+function ComingSoonState({ chapter }: { chapter: Chapter }) {
   return (
     <div className="mx-auto max-w-[72ch] px-4 py-10 space-y-6">
       <BackLink />
-      <div className="clay rounded-2xl bg-card p-8 text-center">
-        <div className="clay-chip mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+      <Card className="items-center p-8 text-center">
+        <span className="flex h-14 w-14 items-center justify-center rounded-xl border border-border bg-muted text-muted-foreground">
           <Lock className="h-7 w-7" aria-hidden="true" />
-        </div>
-        <span
-          className={cn(
-            "clay-chip mt-5 inline-block rounded-lg px-3 py-1 font-display text-xs font-bold",
-            tone.chip,
-            tone.ink
-          )}
-        >
-          {chapter.phaseGroup}
         </span>
-        <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-foreground">
-          {chapter.title}
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">{chapter.subtitle}</p>
-        <p className="mx-auto mt-5 max-w-md text-[15px] leading-7 text-foreground/80">
+        <PhaseBadge chapter={chapter} />
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            {chapter.title}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {chapter.subtitle}
+          </p>
+        </div>
+        <p className="mx-auto max-w-md text-base leading-7 text-foreground/80">
           This chapter is coming soon. In the meantime, start with the chapters
           that are ready and come back as the curriculum grows.
         </p>
-        <Link
-          href="/learn"
-          className="clay-btn mt-6 inline-flex items-center gap-2 bg-primary px-5 py-2.5 text-sm font-display font-semibold text-primary-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          Browse chapters
-        </Link>
-      </div>
+        <Button asChild>
+          <Link href="/learn">
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            Browse chapters
+          </Link>
+        </Button>
+      </Card>
     </div>
   );
 }
@@ -82,24 +96,28 @@ function KeyTakeaways({ items }: { items: string[] }) {
     <section aria-labelledby="takeaways-heading" className="mt-10">
       <h2
         id="takeaways-heading"
-        className="font-display text-2xl font-bold tracking-tight text-foreground mb-3 flex items-center gap-2"
+        className="mb-3 flex items-center gap-2 text-2xl font-bold tracking-tight text-foreground"
       >
-        <Sparkles className="h-6 w-6 text-mint-ink" aria-hidden="true" />
+        <Sparkles className="h-6 w-6 text-primary" aria-hidden="true" />
         Key Takeaways
       </h2>
-      <ul className="clay-inset space-y-3 rounded-xl bg-mint-soft/50 p-5">
-        {items.map((item, i) => (
-          <li key={i} className="flex items-start gap-2.5">
-            <CheckCircle
-              className="mt-0.5 h-5 w-5 shrink-0 text-mint-ink"
-              aria-hidden="true"
-            />
-            <span className="text-[15px] leading-7 text-foreground/85">
-              {item}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <Card className="border-l-4 border-l-primary py-5">
+        <CardContent>
+          <ul className="space-y-3">
+            {items.map((item, i) => (
+              <li key={i} className="flex items-start gap-2.5">
+                <CheckCircle
+                  className="mt-0.5 h-5 w-5 shrink-0 text-primary"
+                  aria-hidden="true"
+                />
+                <span className="text-base leading-7 text-foreground/85">
+                  {item}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
     </section>
   );
 }
@@ -112,38 +130,60 @@ function ChapterNavFooter({ slug }: { slug: string }) {
     const available = chapter.status === "available";
     const label = dir === "prev" ? "Previous" : "Next";
     const content = (
-      <>
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-          {dir === "prev" && <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />}
-          {label}
-          {dir === "next" && <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />}
-        </span>
-        <span className="mt-1 block font-display text-sm font-semibold text-foreground">
-          {chapter.title}
-        </span>
-        {!available && (
-          <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-muted-foreground">
-            <Lock className="h-3 w-3" aria-hidden="true" />
-            Coming soon
-          </span>
+      <Card
+        className={cn(
+          "h-full gap-1 py-4 transition-colors",
+          dir === "next" && "text-right",
+          available
+            ? "group-hover:border-primary/50 group-focus-visible:border-primary/50"
+            : "opacity-60"
         )}
-      </>
-    );
-
-    const base = cn(
-      "flex-1 rounded-2xl bg-card p-4",
-      dir === "next" && "text-right"
+      >
+        <CardContent>
+          <span
+            className={cn(
+              "flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.1em] text-muted-foreground",
+              dir === "next" && "justify-end"
+            )}
+          >
+            {dir === "prev" && (
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            {label}
+            {dir === "next" && (
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+          </span>
+          <span className="mt-1 block text-sm font-semibold text-foreground">
+            {chapter.title}
+          </span>
+          {!available && (
+            <span
+              className={cn(
+                "mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground",
+                dir === "next" && "flex-row-reverse"
+              )}
+            >
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              Coming soon
+            </span>
+          )}
+        </CardContent>
+      </Card>
     );
 
     if (!available) {
       return (
-        <div aria-disabled="true" className={cn(base, "clay opacity-55")}>
+        <div aria-disabled="true" className="flex-1">
           {content}
         </div>
       );
     }
     return (
-      <Link href={`/learn/${chapter.slug}`} className={cn(base, "clay-btn")}>
+      <Link
+        href={`/learn/${chapter.slug}`}
+        className="group flex-1 rounded-xl focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      >
         {content}
       </Link>
     );
@@ -176,8 +216,6 @@ export default async function ChapterReaderPage({
     return <ComingSoonState chapter={chapter} />;
   }
 
-  const tone = phaseTone[chapter.phaseGroup];
-
   return (
     <>
       <ReadingProgressBar />
@@ -186,39 +224,36 @@ export default async function ChapterReaderPage({
       <article className="mx-auto max-w-[72ch] px-4 py-8">
         <header>
           <BackLink />
-          <span
-            className={cn(
-              "clay-chip mt-4 inline-block rounded-lg px-3 py-1 font-display text-xs font-bold",
-              tone.chip,
-              tone.ink
-            )}
-          >
-            {chapter.phaseGroup}
-          </span>
-          <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+          <div className="mt-4">
+            <PhaseBadge chapter={chapter} />
+          </div>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
             {chapter.title}
           </h1>
           <p className="mt-2 text-base text-muted-foreground">
             {chapter.subtitle}
           </p>
-          <p className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+          <p className="mt-3 inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" aria-hidden="true" />
             {chapter.readingMinutes} min read
           </p>
         </header>
+
+        <Separator className="mt-6" />
 
         <div className="mt-8">
           <MarkdownContent>{chapter.body}</MarkdownContent>
         </div>
 
         {chapter.relatedPanel && (
-          <Link
-            href={chapter.relatedPanel.href}
-            className="clay-btn mt-8 inline-flex items-center gap-2 bg-primary px-5 py-2.5 text-sm font-display font-semibold text-primary-foreground"
-          >
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            See it live: {chapter.relatedPanel.label}
-          </Link>
+          <div className="mt-8">
+            <Button asChild>
+              <Link href={chapter.relatedPanel.href}>
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                See it live: {chapter.relatedPanel.label}
+              </Link>
+            </Button>
+          </div>
         )}
 
         {chapter.keyTakeaways && chapter.keyTakeaways.length > 0 && (

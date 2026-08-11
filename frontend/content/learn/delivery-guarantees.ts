@@ -111,7 +111,7 @@ it. Instead it **hides** the task and starts a **lease** (also called a
         ▼
   ┌───────────────── lease (N seconds) ─────────────────┐
   │ task is hidden — invisible to other workers         │
-  └─────────────────────────────────────────────────────┘
+  └──────────────────────────────────────────────────-──┘
         │                                   │
    ACK before expiry                   lease EXPIRES (no ack)
         │                                   │

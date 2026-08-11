@@ -67,12 +67,34 @@
 
 body {
   font-family: var(--font-sans);
-  background: var(--color-background);
   color: var(--color-foreground);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Layered ambient background: base slate + soft brand/accent glows. */
+  background-color: var(--color-background);
+  background-image:
+    radial-gradient(
+      58rem 36rem at 50% -8%,
+      color-mix(in srgb, var(--color-primary) 10%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      46rem 34rem at 90% 0%,
+      color-mix(in srgb, var(--color-state-running) 7%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      52rem 40rem at 2% 16%,
+      color-mix(in srgb, #6366f1 6%, transparent) 0%,
+      transparent 55%
+    );
+  background-attachment: fixed;
+  background-repeat: no-repeat;
 }
+
+/* The dev-grid overlay is rendered by <InteractiveGrid /> (cursor-reactive). */
 
 * {
   border-color: var(--color-border);

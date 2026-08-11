@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import ConditionalNav from "@/components/ConditionalNav";
+import InteractiveGrid from "@/components/InteractiveGrid";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -35,6 +36,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body>
+        <InteractiveGrid />
         <TooltipProvider>
           <ConditionalNav />
           {children}
