@@ -40,7 +40,7 @@ function EventRow({ event }: { event: TaskEvent }) {
         {event.type}
       </Badge>
       <span className="text-xs text-foreground truncate">
-        <span className="font-semibold text-sky-ink">{event.task_id}</span>
+        <span className="font-semibold text-state-queued">{event.task_id}</span>
         {event.worker_id >= 0 && (
           <span className="text-muted-foreground"> W{event.worker_id}</span>
         )}

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Dialog,
+  DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
@@ -47,7 +48,7 @@ export default function TaskSubmissionPanel() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const taskId = id.trim() || `task-${Date.now()}`;
     setSubmitting(true);
@@ -217,10 +218,10 @@ export default function TaskSubmissionPanel() {
 
           {toast && (
             <div
-              className={`toast clay-chip px-4 py-2.5 text-sm font-bold font-display ${
+              className={`toast rounded-lg border px-4 py-2.5 text-sm font-semibold shadow-lg ${
                 toast.type === "success"
-                  ? "bg-mint-soft text-mint-ink"
-                  : "bg-coral-soft text-coral-ink"
+                  ? "border-state-succeeded/25 bg-state-succeeded/15 text-state-succeeded"
+                  : "border-state-failed/25 bg-state-failed/15 text-state-failed"
               }`}
             >
               {toast.msg}
@@ -230,7 +231,8 @@ export default function TaskSubmissionPanel() {
       </Card>
 
       {/* Flush Confirmation Dialog */}
-      <Dialog open={flushDialogOpen} onClose={() => setFlushDialogOpen(false)}>
+      <Dialog open={flushDialogOpen} onOpenChange={setFlushDialogOpen}>
+        <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-destructive">
             <AlertTriangle className="w-5 h-5" />
@@ -250,10 +252,12 @@ export default function TaskSubmissionPanel() {
             Yes, Clear Everything
           </Button>
         </DialogFooter>
+        </DialogContent>
       </Dialog>
 
       {/* Batch Config Dialog */}
-      <Dialog open={batchDialogOpen} onClose={() => setBatchDialogOpen(false)}>
+      <Dialog open={batchDialogOpen} onOpenChange={setBatchDialogOpen}>
+        <DialogContent>
         <DialogHeader>
           <DialogTitle>Configure Batch — {batchCount.toLocaleString()} Tasks</DialogTitle>
           <DialogDescription>
@@ -325,6 +329,7 @@ export default function TaskSubmissionPanel() {
             Send {batchCount.toLocaleString()} Tasks
           </Button>
         </DialogFooter>
+        </DialogContent>
       </Dialog>
     </>
   );
