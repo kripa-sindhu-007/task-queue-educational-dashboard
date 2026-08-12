@@ -59,6 +59,7 @@ func main() {
 	node := worker.NewNode(worker.NodeConfig{
 		Nodes:             nodeStore,
 		Pool:              pool,
+		Events:            eventStore,
 		NodeID:            nodeID,
 		Hostname:          worker.Hostname(),
 		Capacity:          cfg.WorkerCount,

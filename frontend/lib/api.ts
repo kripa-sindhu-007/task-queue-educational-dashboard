@@ -48,6 +48,12 @@ export async function getEvents(limit = 50): Promise<TaskEvent[]> {
   return res.json();
 }
 
+export async function getClusterEvents(limit = 50): Promise<TaskEvent[]> {
+  const res = await fetch(`${API_BASE}/api/events/cluster?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to fetch cluster events");
+  return res.json();
+}
+
 export async function getWorkers(): Promise<WorkerState[]> {
   const res = await fetch(`${API_BASE}/api/workers`);
   if (!res.ok) throw new Error("Failed to fetch workers");

@@ -99,8 +99,9 @@ func main() {
 
 	// Start reaper (reclaims expired leases and dead nodes' in-flight work)
 	taskReaper := reaper.New(redisClient, taskStore, deadLetterStore, eventStore, metricsStore, nodeStore, reaper.Config{
-		Interval:  cfg.ReaperInterval,
-		BatchSize: 100,
+		Interval:        cfg.ReaperInterval,
+		BatchSize:       100,
+		NodeGraceWindow: cfg.NodeGraceWindow,
 	})
 	go taskReaper.Start(ctx)
 
@@ -110,6 +111,7 @@ func main() {
 		node := worker.NewNode(worker.NodeConfig{
 			Nodes:             nodeStore,
 			Pool:              pool,
+			Events:            eventStore,
 			NodeID:            nodeID,
 			Hostname:          worker.Hostname(),
 			Capacity:          cfg.WorkerCount,

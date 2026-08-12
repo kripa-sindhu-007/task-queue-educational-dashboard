@@ -1,27 +1,31 @@
-import * as React from "react";
-import { cn } from "@/lib/utils";
+"use client"
 
-interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
-  value?: number;
-}
+import * as React from "react"
+import { Progress as ProgressPrimitive } from "radix-ui"
 
-const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
-  ({ className, value = 0, ...props }, ref) => (
-    <div
-      ref={ref}
+import { cn } from "@/lib/utils"
+
+function Progress({
+  className,
+  value,
+  ...props
+}: React.ComponentProps<typeof ProgressPrimitive.Root>) {
+  return (
+    <ProgressPrimitive.Root
+      data-slot="progress"
       className={cn(
-        "clay-inset relative h-3 w-full overflow-hidden rounded-full",
+        "relative h-2 w-full overflow-hidden rounded-full bg-primary/20",
         className
       )}
       {...props}
     >
-      <div
-        className="h-full rounded-full bg-gradient-to-r from-mint to-aqua transition-all duration-500 ease-out"
-        style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+      <ProgressPrimitive.Indicator
+        data-slot="progress-indicator"
+        className="h-full w-full flex-1 bg-primary transition-all"
+        style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
       />
-    </div>
+    </ProgressPrimitive.Root>
   )
-);
-Progress.displayName = "Progress";
+}
 
-export { Progress };
+export { Progress }

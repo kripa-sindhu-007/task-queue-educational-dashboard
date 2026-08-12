@@ -1,166 +1,125 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /*
-  Claymorphism — playful educational dashboard.
-  Light lavender base + a vibrant "candy" state palette. Each queue stage/state
-  maps to a clay color; every color has an accessible `-ink` variant (>=4.5:1 on
-  white) for small text, and a soft `-soft` tint for chip backgrounds.
+  Modern Dark — a dev-serious, engineering-credible dark UI.
+  Slate-navy base (never pure black), green "run/execute" accent, monospace for
+  code, eyebrows and metric figures. Dark-only: tokens live in :root and the
+  <html> element carries `.dark` so shadcn's `dark:` utilities resolve too.
 */
+@custom-variant dark (&:is(.dark *));
+
 @theme {
-  /* Base surfaces */
-  --color-background: #edf0ff;
-  --color-foreground: #2c2a4a;
-  --color-card: #ffffff;
-  --color-card-foreground: #2c2a4a;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #2c2a4a;
+  /* ---- Base surfaces (shadcn token contract) ---- */
+  --color-background: #0f172a;
+  --color-foreground: #f8fafc;
+  --color-card: #1e293b;
+  --color-card-foreground: #f8fafc;
+  --color-popover: #1e293b;
+  --color-popover-foreground: #f8fafc;
 
-  --color-primary: #6366f1;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #eef1ff;
-  --color-secondary-foreground: #4338ca;
-  --color-muted: #eef0fb;
-  --color-muted-foreground: #5b5980;
-  --color-accent: #f97316;
-  --color-accent-foreground: #ffffff;
-  --color-destructive: #f43f5e;
-  --color-destructive-foreground: #ffffff;
-  --color-border: #e2e3f5;
-  --color-input: #e2e3f5;
-  --color-ring: #6366f1;
+  --color-primary: #22c55e;            /* green — "run / execute" */
+  --color-primary-foreground: #052e16; /* dark green ink on the accent (AA) */
+  --color-secondary: #334155;
+  --color-secondary-foreground: #f8fafc;
+  --color-muted: #272f42;
+  --color-muted-foreground: #94a3b8;
+  --color-accent: #22c55e;
+  --color-accent-foreground: #052e16;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #f8fafc;
+  --color-border: #475569;
+  --color-input: #475569;
+  --color-ring: #22c55e;
 
-  --radius: 1.25rem;
+  /* ---- Radius (tightened from clay's chunky 1.25rem) ---- */
+  --radius: 0.5rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 
-  /* Candy palette (base / accessible ink / soft tint) */
-  --color-sky: #0ea5e9;
-  --color-sky-ink: #0369a1;
-  --color-sky-soft: #e0f2fe;
+  /* ---- Semantic queue/task state scale (dark-native) --------------------
+     One token per state; each is a bright hue chosen to stay legible (AA:
+     >=4.5:1 for text, >=3:1 for large) on the #0F172A / #1E293B surfaces.
+     This is INFORMATION, not decoration — later phases recolor panels from it.
+       token                  -> state(s)
+       --color-state-queued   -> queued / waiting              (blue)
+       --color-state-leased   -> leased / claimed by a worker  (amber)
+       --color-state-running  -> running / in-flight           (cyan)
+       --color-state-retrying -> retrying / requeued           (orange)
+       --color-state-succeeded-> acked / completed / succeeded (green)
+       --color-state-failed   -> failed / dead-lettered        (red)
+       --color-state-dead     -> dead node / inert / drained   (muted gray) */
+  --color-state-queued: #60a5fa;    /* blue-400  */
+  --color-state-leased: #fbbf24;    /* amber-400 */
+  --color-state-running: #22d3ee;   /* cyan-400  */
+  --color-state-retrying: #fb923c;  /* orange-400 */
+  --color-state-succeeded: #4ade80; /* green-400 */
+  --color-state-failed: #f87171;    /* red-400   */
+  --color-state-dead: #cbd5e1;      /* slate-300 (muted / inert) */
 
-  --color-grape: #8b5cf6;
-  --color-grape-ink: #6d28d9;
-  --color-grape-soft: #ede9fe;
-
-  --color-mint: #10b981;
-  --color-mint-ink: #047857;
-  --color-mint-soft: #d1fae5;
-
-  --color-coral: #f43f5e;
-  --color-coral-ink: #be123c;
-  --color-coral-soft: #ffe4e6;
-
-  --color-sunny: #f59e0b;
-  --color-sunny-ink: #b45309;
-  --color-sunny-soft: #fef3c7;
-
-  --color-tangerine: #f97316;
-  --color-tangerine-ink: #c2410c;
-  --color-tangerine-soft: #ffedd5;
-
-  --color-bubble: #ec4899;
-  --color-bubble-ink: #be185d;
-  --color-bubble-soft: #fce7f3;
-
-  --color-aqua: #06b6d4;
-  --color-aqua-ink: #0e7490;
-  --color-aqua-soft: #cffafe;
-
-  --color-indigo-ink: #4338ca;
-
-  --font-display: var(--font-fredoka), "Fredoka", system-ui, sans-serif;
-  --font-body: var(--font-nunito), "Nunito", system-ui, sans-serif;
-}
-
-/* ---- Clay shadow recipes ---------------------------------------------------
-   Signature claymorphism: soft outer drop + inner top highlight + inner bottom
-   shadow, on chunky rounded corners. Tinted with indigo so surfaces feel warm. */
-:root {
-  --clay-shadow:
-    0 12px 26px -8px rgba(79, 70, 180, 0.28),
-    0 6px 10px -6px rgba(79, 70, 180, 0.18),
-    inset 0 6px 10px rgba(255, 255, 255, 0.9),
-    inset 0 -7px 12px rgba(120, 110, 210, 0.14);
-  --clay-shadow-sm:
-    0 6px 14px -6px rgba(79, 70, 180, 0.24),
-    inset 0 3px 6px rgba(255, 255, 255, 0.85),
-    inset 0 -4px 7px rgba(120, 110, 210, 0.14);
-  --clay-inset:
-    inset 0 3px 8px rgba(79, 70, 180, 0.20),
-    inset 0 -2px 4px rgba(255, 255, 255, 0.7);
+  /* ---- Fonts (next/font exposes the CSS vars) ---- */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "SFMono-Regular",
+    "JetBrains Mono", monospace;
 }
 
 body {
-  font-family: var(--font-body);
-  background:
-    radial-gradient(1200px 600px at 15% -10%, #f6e9ff 0%, transparent 55%),
-    radial-gradient(1000px 500px at 100% 0%, #e0f6ff 0%, transparent 50%),
-    var(--color-background);
-  background-attachment: fixed;
+  font-family: var(--font-sans);
   color: var(--color-foreground);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Layered ambient background: base slate + soft brand/accent glows. */
+  background-color: var(--color-background);
+  background-image:
+    radial-gradient(
+      58rem 36rem at 50% -8%,
+      color-mix(in srgb, var(--color-primary) 10%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      46rem 34rem at 90% 0%,
+      color-mix(in srgb, var(--color-state-running) 7%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      52rem 40rem at 2% 16%,
+      color-mix(in srgb, #6366f1 6%, transparent) 0%,
+      transparent 55%
+    );
+  background-attachment: fixed;
+  background-repeat: no-repeat;
 }
 
-h1, h2, h3, h4, .font-display {
-  font-family: var(--font-display);
-  letter-spacing: -0.01em;
+/* The dev-grid overlay is rendered by <InteractiveGrid /> (cursor-reactive). */
+
+* {
+  border-color: var(--color-border);
 }
 
-/* ---- Clay surfaces ---------------------------------------------------------- */
-.clay {
-  background: var(--color-card);
-  border-radius: var(--radius);
-  box-shadow: var(--clay-shadow);
+h1, h2, h3, h4 {
+  letter-spacing: -0.015em;
 }
 
-.clay-sm {
-  border-radius: 1rem;
-  box-shadow: var(--clay-shadow-sm);
+/* Monospace eyebrows / labels / small caps — used for terminal accents. */
+.font-eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
-.clay-inset {
-  background: #f3f4fd;
-  border-radius: 0.9rem;
-  box-shadow: var(--clay-inset);
-}
-
-/* Interactive clay (buttons, clickable cards): press + lift feedback */
-.clay-btn {
-  border-radius: 1rem;
-  box-shadow: var(--clay-shadow-sm);
-  transition: transform 180ms ease-out, box-shadow 180ms ease-out,
-    filter 180ms ease-out;
-}
-.clay-btn:hover {
-  transform: translateY(-2px);
-  filter: brightness(1.03);
-}
-.clay-btn:active {
-  transform: translateY(1px);
-  box-shadow: var(--clay-inset);
-}
-.clay-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--clay-shadow-sm), 0 0 0 4px rgba(99, 102, 241, 0.35);
-}
-
-/* Soft colored clay chip: pass a tint via --chip / --chip-ink */
-.clay-chip {
-  border-radius: 0.85rem;
-  box-shadow:
-    inset 0 2px 4px rgba(255, 255, 255, 0.85),
-    inset 0 -3px 6px rgba(0, 0, 0, 0.06),
-    0 4px 10px -6px rgba(79, 70, 180, 0.25);
-}
-
-/* ---- Activity Log (light clay terminal) ------------------------------------ */
+/* ---- Activity Log (dark terminal scroller) --------------------------------- */
 .activity-log {
-  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1.7;
   max-height: 400px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #c7c9ee transparent;
+  scrollbar-color: var(--color-border) transparent;
 }
 .activity-log::-webkit-scrollbar {
   width: 8px;
@@ -169,31 +128,11 @@ h1, h2, h3, h4, .font-display {
   background: transparent;
 }
 .activity-log::-webkit-scrollbar-thumb {
-  background: #c7c9ee;
+  background: var(--color-border);
   border-radius: 999px;
 }
 
-/* ---- Animations ------------------------------------------------------------- */
-@keyframes clay-pulse {
-  0%, 100% {
-    box-shadow: var(--clay-shadow-sm), 0 0 0 0 rgba(99, 102, 241, 0.35);
-  }
-  50% {
-    box-shadow: var(--clay-shadow-sm), 0 0 0 10px rgba(99, 102, 241, 0);
-  }
-}
-.worker-pulse {
-  animation: clay-pulse 2s ease-in-out infinite;
-}
-
-@keyframes float-soft {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-3px); }
-}
-.float-soft {
-  animation: float-soft 3s ease-in-out infinite;
-}
-
+/* ---- Toast anchor (legacy panel toast) ------------------------------------- */
 .toast {
   position: fixed;
   bottom: 1.5rem;
@@ -207,5 +146,4 @@ h1, h2, h3, h4, .font-display {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
-  .clay-btn:hover { transform: none; }
 }

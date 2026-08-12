@@ -33,7 +33,7 @@ export interface SubmitTaskRequest {
 export interface TaskEvent {
   id: string;
   task_id: string;
-  type: "submitted" | "started" | "completed" | "failed" | "retrying" | "dead_lettered" | "promoted" | "reclaimed" | "node_dead" | "redriven";
+  type: "submitted" | "started" | "completed" | "failed" | "retrying" | "dead_lettered" | "promoted" | "reclaimed" | "node_joined" | "node_dead" | "redriven";
   worker_id: number;
   detail: string;
   timestamp: string;

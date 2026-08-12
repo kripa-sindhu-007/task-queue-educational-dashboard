@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { usePolling } from "@/lib/hooks";
@@ -11,8 +11,8 @@ import { Server, ServerOff } from "lucide-react";
 const MAX_DOTS = 12;
 
 // WorkerSlots visualizes a node's executor goroutines: one dot per capacity slot,
-// the first `inFlight` shown as busy (aqua, pulsing). This replaces the old
-// standalone Worker Pool panel with a per-node view.
+// the first `inFlight` shown as busy (running/cyan, pulsing). This replaces the
+// old standalone Worker Pool panel with a per-node view.
 function WorkerSlots({ capacity, inFlight }: { capacity: number; inFlight: number }) {
   if (capacity <= 0) return null;
   const busy = Math.max(0, Math.min(inFlight, capacity));
@@ -20,9 +20,9 @@ function WorkerSlots({ capacity, inFlight }: { capacity: number; inFlight: numbe
 
   return (
     <div className="mt-2.5">
-      <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-foreground/50">
+      <div className="mb-1 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>workers</span>
-        <span className="font-display tabular-nums text-foreground/70">
+        <span className="tabular-nums text-foreground/70">
           {busy}/{capacity} busy
         </span>
       </div>
@@ -33,13 +33,13 @@ function WorkerSlots({ capacity, inFlight }: { capacity: number; inFlight: numbe
             aria-hidden
             className={`h-2.5 w-2.5 rounded-full ${
               i < busy
-                ? "bg-aqua shadow-[0_0_0_2px_rgba(255,255,255,0.6)] animate-pulse"
-                : "bg-white/70 shadow-[inset_0_1px_2px_rgba(79,70,180,0.25)]"
+                ? "bg-state-running ring-2 ring-state-running/30 animate-pulse"
+                : "bg-foreground/15"
             }`}
           />
         ))}
         {capacity > MAX_DOTS && (
-          <span className="text-[10px] font-bold text-foreground/50">
+          <span className="font-mono text-[10px] text-muted-foreground">
             +{capacity - MAX_DOTS}
           </span>
         )}
@@ -50,56 +50,70 @@ function WorkerSlots({ capacity, inFlight }: { capacity: number; inFlight: numbe
 
 function NodeCard({ node }: { node: Node }) {
   const alive = node.alive;
+  const reduce = useReducedMotion();
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, scale: 0.9 }}
+      initial={reduce ? false : { opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.9 }}
+      exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.9 }}
       transition={{ duration: 0.2 }}
-      className={`clay-chip p-3.5 ${
-        alive ? "bg-mint-soft" : "bg-coral-soft opacity-75"
+      className={`rounded-lg border p-3.5 ${
+        alive
+          ? "border-state-succeeded/25 bg-state-succeeded/5"
+          : "border-state-dead/25 bg-state-dead/5 opacity-70"
       }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
           {alive ? (
-            <Server className="w-4 h-4 text-mint-ink shrink-0" strokeWidth={2.5} />
+            <Server className="h-4 w-4 shrink-0 text-state-succeeded" aria-hidden="true" />
           ) : (
-            <ServerOff className="w-4 h-4 text-coral-ink shrink-0" strokeWidth={2.5} />
+            <ServerOff className="h-4 w-4 shrink-0 text-state-dead" aria-hidden="true" />
           )}
           <span
-            className={`font-display text-sm font-bold truncate ${
-              alive ? "text-mint-ink" : "text-coral-ink"
+            className={`truncate font-mono text-sm font-semibold ${
+              alive ? "text-state-succeeded" : "text-state-dead"
             }`}
             title={node.hostname}
           >
             {node.hostname || node.id}
           </span>
         </div>
-        <Badge variant={alive ? "success" : "destructive"} className="text-[10px] shrink-0">
-          {alive ? "alive" : "dead"}
-        </Badge>
+        {alive ? (
+          <Badge variant="success" className="shrink-0 text-[10px]">
+            alive
+          </Badge>
+        ) : (
+          <Badge
+            variant="outline"
+            className="shrink-0 border-state-dead/25 bg-state-dead/15 text-[10px] text-state-dead"
+          >
+            dead
+          </Badge>
+        )}
       </div>
 
       {alive ? (
         <WorkerSlots capacity={node.capacity} inFlight={node.in_flight_tasks} />
       ) : (
-        <p className="mt-2.5 text-[11px] font-bold text-coral-ink/80">
+        <p className="mt-2.5 text-[11px] font-medium text-state-dead/80">
           {node.in_flight_tasks > 0
             ? `reclaiming ${node.in_flight_tasks} task(s)…`
             : "offline — awaiting reap"}
         </p>
       )}
 
-      <div className="mt-2.5 flex items-center justify-between text-xs font-semibold text-foreground/60">
+      <div className="mt-2.5 flex items-center justify-between text-xs text-muted-foreground">
         <span title="tasks currently leased by this node">
           in-flight:{" "}
-          <span className="font-display tabular-nums text-foreground">{node.in_flight_tasks}</span>
+          <span className="font-mono tabular-nums text-foreground">{node.in_flight_tasks}</span>
         </span>
-        <span title="executor goroutines">cap {node.capacity}</span>
+        <span title="executor goroutines">
+          cap <span className="font-mono tabular-nums">{node.capacity}</span>
+        </span>
       </div>
-      <code className="mt-1 block text-[10px] text-foreground/45 truncate" title={node.id}>
+      <code className="mt-1 block truncate font-mono text-[10px] text-muted-foreground/70" title={node.id}>
         {node.id}
       </code>
     </motion.div>
@@ -125,19 +139,28 @@ export default function NodePanel() {
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-3">
           <span>Cluster Nodes &amp; Workers</span>
-          <span className="font-body text-xs font-bold text-muted-foreground tabular-nums">
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">
             {aliveCount} alive · {busyTotal} busy / {sorted.length} nodes
           </span>
         </CardTitle>
       </CardHeader>
       <CardContent>
         {sorted.length === 0 ? (
-          <p className="text-sm text-muted-foreground font-medium">
-            No worker nodes registered. Start some with{" "}
-            <code className="text-sky-ink font-semibold">docker compose up --scale worker=4</code>.
-          </p>
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+            <ServerOff className="h-7 w-7 text-state-dead" aria-hidden="true" />
+            <p className="text-sm font-medium text-foreground">
+              No worker nodes registered
+            </p>
+            <p className="max-w-md text-xs text-muted-foreground">
+              Start some workers with{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-state-queued">
+                docker compose up --scale worker=4
+              </code>{" "}
+              and they will appear here.
+            </p>
+          </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4">
             <AnimatePresence mode="popLayout">
               {sorted.map((n) => (
                 <NodeCard key={n.id} node={n} />

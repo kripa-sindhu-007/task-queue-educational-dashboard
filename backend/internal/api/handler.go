@@ -153,7 +153,10 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	queueSize, _ := h.deps.Queue.Size(ctx)
-	activeWorkers := h.deps.Pool.ActiveWorkers()
+	// active_workers = cluster-wide count of leased tasks (ZCARD processing), the
+	// single source of truth. Correct in both single-binary and distributed modes;
+	// Pool.ActiveWorkers() would be 0 when RUN_WORKERS=false.
+	activeWorkers, _ := h.deps.QueuePeek.ProcessingSize(ctx)
 
 	m, err := h.deps.Metrics.Get(ctx, queueSize, activeWorkers)
 	if err != nil {
@@ -192,6 +195,22 @@ func (h *Handler) GetEvents(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 	events, err := h.deps.Events.List(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+// GetClusterEvents returns the retained cluster lifecycle stream (node_joined,
+// node_dead, reclaimed) from a separate list that a burst of task events can't
+// evict. Mirror of GetEvents against taskqueue:events:cluster.
+func (h *Handler) GetClusterEvents(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64)
+	if limit <= 0 {
+		limit = 50
+	}
+	events, err := h.deps.Events.ListCluster(r.Context(), limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -248,7 +267,9 @@ func (h *Handler) GetQueues(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetEnhancedMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	queueSize, _ := h.deps.Queue.Size(ctx)
-	activeWorkers := h.deps.Pool.ActiveWorkers()
+	// See GetMetrics: source active_workers from ZCARD(processing), not the
+	// in-process pool counter, so it's correct in distributed mode too.
+	activeWorkers, _ := h.deps.QueuePeek.ProcessingSize(ctx)
 	delayedSize, _ := h.deps.QueuePeek.DelayedSize(ctx)
 	deadLetterSize, _ := h.deps.QueuePeek.DeadLetterSize(ctx)
 
@@ -264,7 +285,8 @@ func (h *Handler) FlushData(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keys := []string{
 		store.KeyReady, store.KeyDelayed, store.KeyProcessing, store.KeyDeadLetter,
-		store.KeyMetrics, store.KeyEvents, store.KeyWorkers,
+		store.KeyMetrics, store.KeyEvents, store.KeyEventsCluster, store.KeyWorkers,
+		store.KeyNodes,
 	}
 	h.deps.Redis.Del(ctx, keys...)
 
@@ -276,6 +298,17 @@ func (h *Handler) FlushData(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(taskKeys) > 0 {
 		h.deps.Redis.Del(ctx, taskKeys...)
+	}
+
+	// Delete all per-node keys (taskqueue:node:*:hb / :tasks / :meta / :dead) so a
+	// flush leaves no stale node cards or tombstones in the registry.
+	nodeIter := h.deps.Redis.Scan(ctx, 0, "taskqueue:node:*", 200).Iterator()
+	var nodeKeys []string
+	for nodeIter.Next(ctx) {
+		nodeKeys = append(nodeKeys, nodeIter.Val())
+	}
+	if len(nodeKeys) > 0 {
+		h.deps.Redis.Del(ctx, nodeKeys...)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "flushed"})
