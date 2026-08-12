@@ -22,8 +22,9 @@ var reclaimScript string
 
 // Config holds reaper operational parameters.
 type Config struct {
-	Interval  time.Duration // how often the reaper scans (e.g. 5s)
-	BatchSize int64         // max expired tasks to process per tick (e.g. 100)
+	Interval        time.Duration // how often the reaper scans (e.g. 5s)
+	BatchSize       int64         // max expired tasks to process per tick (e.g. 100)
+	NodeGraceWindow time.Duration // how long a dead node stays visible (alive:false) before it's pruned
 }
 
 // Reaper periodically scans for (a) dead nodes, eagerly reclaiming all of their
@@ -88,8 +89,15 @@ func (r *Reaper) Start(ctx context.Context) {
 // reclaims every task they hold in flight — without waiting for each individual
 // lease to expire. This is what makes the "kill a worker, watch it recover"
 // demo fast: recovery is bounded by the heartbeat TTL, not the visibility
-// timeout. After a dead node's tasks are reclaimed, the node is removed from the
-// registry.
+// timeout.
+//
+// A dead node is not pruned immediately. On first detection (MarkDead SET NX
+// wins) the reaper reclaims the node's in-flight tasks and emits node_dead
+// exactly once; the node then stays in the registry as alive:false — with its
+// metadata intact from the :meta descriptor — until NodeGraceWindow elapses, so
+// the dashboard can show it dying and recovering its tasks before it disappears.
+// A stalled node whose heartbeat returns clears its own tombstone (in Heartbeat)
+// and drops out of DeadNodeIDs, so it is never pruned.
 func (r *Reaper) reapDeadNodes(ctx context.Context) {
 	if r.nodes == nil {
 		return
@@ -99,25 +107,47 @@ func (r *Reaper) reapDeadNodes(ctx context.Context) {
 		log.Printf("Reaper: error scanning for dead nodes: %v", err)
 		return
 	}
+	now := time.Now()
 	for _, nodeID := range dead {
-		taskIDs, err := r.nodes.OwnedTaskIDs(ctx, nodeID)
+		firstTime, err := r.nodes.MarkDead(ctx, nodeID)
 		if err != nil {
-			log.Printf("Reaper: error listing tasks for dead node %s: %v", nodeID, err)
+			log.Printf("Reaper: error marking node %s dead: %v", nodeID, err)
 			continue
 		}
-		if len(taskIDs) > 0 {
-			log.Printf("Reaper: node %s is dead — reclaiming %d in-flight task(s)", nodeID, len(taskIDs))
-			r.emitEvent(ctx, "", "node_dead",
-				fmt.Sprintf("Node %s heartbeat expired; reclaiming %d task(s)", nodeID, len(taskIDs)))
-			for _, taskID := range taskIDs {
-				r.reclaimTask(ctx, taskID)
+
+		if firstTime {
+			// First observation of this death: reclaim its work and announce it once.
+			taskIDs, err := r.nodes.OwnedTaskIDs(ctx, nodeID)
+			if err != nil {
+				log.Printf("Reaper: error listing tasks for dead node %s: %v", nodeID, err)
+				continue
 			}
-		} else {
-			r.emitEvent(ctx, "", "node_dead", fmt.Sprintf("Node %s heartbeat expired (no in-flight tasks)", nodeID))
+			if len(taskIDs) > 0 {
+				log.Printf("Reaper: node %s is dead — reclaiming %d in-flight task(s)", nodeID, len(taskIDs))
+				r.emitEvent(ctx, "", "node_dead",
+					fmt.Sprintf("Node %s heartbeat expired; reclaiming %d task(s)", nodeID, len(taskIDs)))
+				for _, taskID := range taskIDs {
+					r.reclaimTask(ctx, taskID)
+				}
+			} else {
+				r.emitEvent(ctx, "", "node_dead", fmt.Sprintf("Node %s heartbeat expired (no in-flight tasks)", nodeID))
+			}
+			continue
 		}
-		// Clean up the (now-drained) node from the registry.
-		if err := r.nodes.Remove(ctx, nodeID); err != nil {
-			log.Printf("Reaper: error removing dead node %s: %v", nodeID, err)
+
+		// Already reclaimed on a prior tick: prune only once the grace window has
+		// elapsed so the DEAD card stays visible for a while.
+		deadSince, ok, err := r.nodes.DeadSince(ctx, nodeID)
+		if err != nil {
+			log.Printf("Reaper: error reading dead-since for node %s: %v", nodeID, err)
+			continue
+		}
+		if !ok || now.Sub(deadSince) >= r.cfg.NodeGraceWindow {
+			if err := r.nodes.Remove(ctx, nodeID); err != nil {
+				log.Printf("Reaper: error removing dead node %s: %v", nodeID, err)
+			} else {
+				log.Printf("Reaper: pruned dead node %s after grace window", nodeID)
+			}
 		}
 	}
 }

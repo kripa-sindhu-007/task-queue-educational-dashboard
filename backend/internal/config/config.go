@@ -24,6 +24,7 @@ type Config struct {
 	RunWorkers        bool          // run the worker pool in-process (single-binary/dev mode)
 	HeartbeatInterval time.Duration // how often a node refreshes its heartbeat key
 	HeartbeatTTL      time.Duration // node heartbeat key expiry (must exceed HeartbeatInterval)
+	NodeGraceWindow   time.Duration // how long a dead node stays visible (alive:false) before the reaper prunes it
 
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
@@ -49,6 +50,7 @@ func Load() (*Config, error) {
 		RunWorkers:        getEnvBool("RUN_WORKERS", true),                // in-process workers on by default (single-binary)
 		HeartbeatInterval: getEnvMillis("HEARTBEAT_INTERVAL_MS", 3000),    // 3s beat
 		HeartbeatTTL:      getEnvMillis("HEARTBEAT_TTL_MS", 10000),        // 10s expiry (tolerates missed beats)
+		NodeGraceWindow:   getEnvMillis("DEAD_NODE_GRACE_MS", 30000),      // 30s dead-card visibility before prune
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),
@@ -89,6 +91,9 @@ func (c *Config) validate() error {
 	if c.HeartbeatTTL <= c.HeartbeatInterval {
 		return fmt.Errorf("config: HEARTBEAT_TTL_MS (%v) must exceed HEARTBEAT_INTERVAL_MS (%v) to tolerate a missed beat",
 			c.HeartbeatTTL, c.HeartbeatInterval)
+	}
+	if c.NodeGraceWindow <= 0 {
+		return fmt.Errorf("config: DEAD_NODE_GRACE_MS must be > 0")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 type NodeConfig struct {
 	Nodes             *store.NodeStore
 	Pool              *Pool
+	Events            *store.EventStore // optional: emits node_joined on successful registration
 	NodeID            string
 	Hostname          string
 	Capacity          int           // executor goroutines (== pool worker count)
@@ -45,6 +47,15 @@ func (n *Node) Run(ctx context.Context) {
 		log.Printf("Node %s: registration failed: %v", n.cfg.NodeID, err)
 	} else {
 		log.Printf("Node %s registered (host=%s, capacity=%d)", n.cfg.NodeID, n.cfg.Hostname, n.cfg.Capacity)
+		if n.cfg.Events != nil {
+			n.cfg.Events.Push(ctx, model.TaskEvent{
+				ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
+				Type:      "node_joined",
+				WorkerID:  -1,
+				Detail:    fmt.Sprintf("Node %s joined (host=%s, capacity=%d)", n.cfg.NodeID, n.cfg.Hostname, n.cfg.Capacity),
+				Timestamp: time.Now(),
+			})
+		}
 	}
 
 	// Heartbeat loop runs independently of task execution so a busy node still

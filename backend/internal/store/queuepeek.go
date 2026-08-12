@@ -68,3 +68,13 @@ func (q *QueuePeekStore) DelayedSize(ctx context.Context) (int64, error) {
 func (q *QueuePeekStore) DeadLetterSize(ctx context.Context) (int64, error) {
 	return q.client.LLen(ctx, KeyDeadLetter).Result()
 }
+
+// ProcessingSize returns the number of tasks currently leased (in the processing
+// ZSET). This is the cluster-wide count of workers actively executing a task:
+// the dequeue Lua inserts every leased task into KeyProcessing and the owning
+// node's tasks SET in one step, so ZCARD(processing) equals the sum of per-node
+// in-flight counts by construction — and is correct in both single-binary and
+// distributed modes. It is the single source of truth for "active workers".
+func (q *QueuePeekStore) ProcessingSize(ctx context.Context) (int64, error) {
+	return q.client.ZCard(ctx, KeyProcessing).Result()
+}

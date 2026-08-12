@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -44,6 +45,10 @@ func (s *NodeStore) Register(ctx context.Context, node model.Node) error {
 	pipe := s.client.Pipeline()
 	pipe.SAdd(ctx, KeyNodes, node.ID)
 	pipe.Set(ctx, NodeHeartbeatKey(node.ID), string(data), s.ttl)
+	// Persist a non-TTL descriptor so a dead node still resolves its metadata,
+	// and clear any stale dead-tombstone so a re-registering node returns to life.
+	pipe.Set(ctx, NodeMetaKey(node.ID), string(data), 0)
+	pipe.Del(ctx, NodeDeadKey(node.ID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("register node %s: %w", node.ID, err)
 	}
@@ -61,6 +66,10 @@ func (s *NodeStore) Heartbeat(ctx context.Context, node model.Node) error {
 	pipe := s.client.Pipeline()
 	pipe.SAdd(ctx, KeyNodes, node.ID)
 	pipe.Set(ctx, NodeHeartbeatKey(node.ID), string(data), s.ttl)
+	// Refresh the descriptor and clear any dead-tombstone: a briefly-stalled node
+	// whose heartbeat returns must go back to alive:true and stop being pruned.
+	pipe.Set(ctx, NodeMetaKey(node.ID), string(data), 0)
+	pipe.Del(ctx, NodeDeadKey(node.ID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("heartbeat node %s: %w", node.ID, err)
 	}
@@ -74,6 +83,8 @@ func (s *NodeStore) Deregister(ctx context.Context, nodeID string) error {
 	pipe.SRem(ctx, KeyNodes, nodeID)
 	pipe.Del(ctx, NodeHeartbeatKey(nodeID))
 	pipe.Del(ctx, NodeTasksKey(nodeID))
+	pipe.Del(ctx, NodeMetaKey(nodeID))
+	pipe.Del(ctx, NodeDeadKey(nodeID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("deregister node %s: %w", nodeID, err)
 	}
@@ -113,12 +124,15 @@ func (s *NodeStore) ListNodes(ctx context.Context) ([]model.Node, error) {
 
 	pipe := s.client.Pipeline()
 	hbCmds := make(map[string]*redis.StringCmd, len(ids))
+	metaCmds := make(map[string]*redis.StringCmd, len(ids))
 	countCmds := make(map[string]*redis.IntCmd, len(ids))
 	for _, id := range ids {
 		hbCmds[id] = pipe.Get(ctx, NodeHeartbeatKey(id))
+		metaCmds[id] = pipe.Get(ctx, NodeMetaKey(id))
 		countCmds[id] = pipe.SCard(ctx, NodeTasksKey(id))
 	}
-	// Pipeline returns redis.Nil if any GET missed; that's expected for dead nodes.
+	// Pipeline returns redis.Nil if any GET missed; that's expected for dead nodes
+	// (heartbeat expired) and for nodes registered before the :meta key existed.
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("list nodes pipeline: %w", err)
 	}
@@ -128,8 +142,16 @@ func (s *NodeStore) ListNodes(ctx context.Context) ([]model.Node, error) {
 		var node model.Node
 		data, err := hbCmds[id].Result()
 		if err == redis.Nil {
-			// Heartbeat expired — node is dead. We still know its ID.
+			// Heartbeat expired — node is dead. Hydrate its hostname/capacity from
+			// the non-TTL descriptor so the DEAD card renders with intact metadata
+			// (no empty-hostname flash) during the grace window.
 			node = model.Node{ID: id, Alive: false}
+			if meta, merr := metaCmds[id].Result(); merr == nil {
+				if uerr := json.Unmarshal([]byte(meta), &node); uerr != nil {
+					node = model.Node{ID: id}
+				}
+				node.Alive = false
+			}
 		} else if err != nil {
 			continue
 		} else {
@@ -187,8 +209,39 @@ func (s *NodeStore) Remove(ctx context.Context, nodeID string) error {
 	pipe.SRem(ctx, KeyNodes, nodeID)
 	pipe.Del(ctx, NodeHeartbeatKey(nodeID))
 	pipe.Del(ctx, NodeTasksKey(nodeID))
+	pipe.Del(ctx, NodeMetaKey(nodeID))
+	pipe.Del(ctx, NodeDeadKey(nodeID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("remove node %s: %w", nodeID, err)
 	}
 	return nil
+}
+
+// MarkDead writes the dead-tombstone for a node exactly once (SET NX). It returns
+// firstTime=true only on the first successful write — the reaper uses this to
+// reclaim a dead node's tasks and emit node_dead exactly once, then treats
+// subsequent ticks as "awaiting prune".
+func (s *NodeStore) MarkDead(ctx context.Context, nodeID string) (firstTime bool, err error) {
+	ok, err := s.client.SetNX(ctx, NodeDeadKey(nodeID), strconv.FormatInt(time.Now().UnixMilli(), 10), 0).Result()
+	if err != nil {
+		return false, fmt.Errorf("mark node %s dead: %w", nodeID, err)
+	}
+	return ok, nil
+}
+
+// DeadSince returns the time a node was first marked dead. ok is false when no
+// tombstone exists (node was never marked dead, or has recovered).
+func (s *NodeStore) DeadSince(ctx context.Context, nodeID string) (time.Time, bool, error) {
+	v, err := s.client.Get(ctx, NodeDeadKey(nodeID)).Result()
+	if err == redis.Nil {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("dead-since node %s: %w", nodeID, err)
+	}
+	ms, perr := strconv.ParseInt(v, 10, 64)
+	if perr != nil {
+		return time.Time{}, false, fmt.Errorf("dead-since node %s: parse %q: %w", nodeID, v, perr)
+	}
+	return time.UnixMilli(ms), true, nil
 }

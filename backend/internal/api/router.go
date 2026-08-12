@@ -12,6 +12,7 @@ func NewRouter(h *Handler) http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}", h.GetTask)
 	mux.HandleFunc("GET /api/health", h.HealthCheck)
 	mux.HandleFunc("GET /api/events", h.GetEvents)
+	mux.HandleFunc("GET /api/events/cluster", h.GetClusterEvents)
 	mux.HandleFunc("GET /api/workers", h.GetWorkers)
 	mux.HandleFunc("GET /api/nodes", h.GetNodes)
 	mux.HandleFunc("GET /api/queues", h.GetQueues)

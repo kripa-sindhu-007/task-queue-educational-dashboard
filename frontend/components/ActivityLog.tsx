@@ -5,9 +5,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { usePolling } from "@/lib/hooks";
-import { getEvents } from "@/lib/api";
+import { getEvents, getClusterEvents } from "@/lib/api";
 import { TaskEvent } from "@/lib/types";
 import { Terminal } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+type LogMode = "all" | "cluster";
 
 const eventVariantMap: Record<string, "success" | "destructive" | "warning" | "info" | "secondary" | "default"> = {
   submitted: "default",
@@ -18,6 +21,7 @@ const eventVariantMap: Record<string, "success" | "destructive" | "warning" | "i
   dead_lettered: "destructive",
   promoted: "secondary",
   reclaimed: "warning",
+  node_joined: "success",
   node_dead: "destructive",
   redriven: "info",
 };
@@ -51,7 +55,11 @@ function EventRow({ event }: { event: TaskEvent }) {
 }
 
 export default function ActivityLog() {
-  const { data: events } = usePolling(() => getEvents(80), 1000);
+  const [mode, setMode] = useState<LogMode>("all");
+  const { data: events } = usePolling(
+    () => (mode === "cluster" ? getClusterEvents(80) : getEvents(80)),
+    1000
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
@@ -70,15 +78,52 @@ export default function ActivityLog() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <CardTitle className="flex items-center gap-2">
             <Terminal className="w-4 h-4" />
             Activity Log
           </CardTitle>
-          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
-            {events ? `${events.length} events` : "loading…"}
-          </span>
+          <div className="flex items-center gap-3">
+            <div
+              role="tablist"
+              aria-label="Activity log filter"
+              className="flex items-center gap-1 rounded-full border border-white/[0.06] bg-muted/30 p-0.5 backdrop-blur"
+            >
+              {([
+                ["all", "All"],
+                ["cluster", "Cluster"],
+              ] as const).map(([value, label]) => {
+                const active = mode === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setMode(value)}
+                    className={cn(
+                      "cursor-pointer rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-all",
+                      "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                      active
+                        ? "bg-primary text-primary-foreground shadow-[0_2px_10px_-2px_var(--color-primary)]"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+              {events ? `${events.length} events` : "loading…"}
+            </span>
+          </div>
         </div>
+        {mode === "cluster" && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Cluster lifecycle events — nodes joining, dying, and tasks reclaimed
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         <div
@@ -105,7 +150,9 @@ export default function ActivityLog() {
             <div className="flex flex-col items-center justify-center gap-1.5 py-10 text-center">
               <Terminal className="h-6 w-6 text-muted-foreground/60" aria-hidden="true" />
               <p className="font-sans text-xs text-muted-foreground">
-                No events yet — submit a task to see the stream.
+                {mode === "cluster"
+                  ? "No cluster events yet — kill a node to watch it recover."
+                  : "No events yet — submit a task to see the stream."}
               </p>
             </div>
           )}
