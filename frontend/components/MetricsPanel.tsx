@@ -13,25 +13,21 @@ import {
   Users,
   Clock,
   Skull,
+  WifiOff,
 } from "lucide-react";
 
-type Tone =
-  | "mint"
-  | "coral"
-  | "sunny"
-  | "sky"
-  | "aqua"
-  | "grape"
-  | "tangerine";
+// Categorical tones drawn from the semantic state scale — color is paired with
+// an icon + label so meaning never rests on hue alone (dataviz a11y rule).
+type Tone = "queued" | "leased" | "running" | "retrying" | "succeeded" | "failed" | "neutral";
 
-const toneClasses: Record<Tone, { chip: string; text: string }> = {
-  mint: { chip: "bg-mint-soft", text: "text-mint-ink" },
-  coral: { chip: "bg-coral-soft", text: "text-coral-ink" },
-  sunny: { chip: "bg-sunny-soft", text: "text-sunny-ink" },
-  sky: { chip: "bg-sky-soft", text: "text-sky-ink" },
-  aqua: { chip: "bg-aqua-soft", text: "text-aqua-ink" },
-  grape: { chip: "bg-grape-soft", text: "text-grape-ink" },
-  tangerine: { chip: "bg-tangerine-soft", text: "text-tangerine-ink" },
+const toneClasses: Record<Tone, string> = {
+  queued: "border-state-queued/25 bg-state-queued/10 text-state-queued",
+  leased: "border-state-leased/25 bg-state-leased/10 text-state-leased",
+  running: "border-state-running/25 bg-state-running/10 text-state-running",
+  retrying: "border-state-retrying/25 bg-state-retrying/10 text-state-retrying",
+  succeeded: "border-state-succeeded/25 bg-state-succeeded/10 text-state-succeeded",
+  failed: "border-state-failed/25 bg-state-failed/10 text-state-failed",
+  neutral: "border-border bg-muted/40 text-muted-foreground",
 };
 
 function StatCard({
@@ -45,21 +41,27 @@ function StatCard({
   icon: React.ComponentType<{ className?: string }>;
   tone: Tone;
 }) {
-  const c = toneClasses[tone];
   return (
-    <div className={`clay-chip flex items-center gap-3 p-3 ${c.chip}`}>
-      <div className={`shrink-0 ${c.text}`}>
-        <Icon className="w-5 h-5" />
-      </div>
+    <div className={`flex items-center gap-3 rounded-lg border p-3 ${toneClasses[tone]}`}>
+      <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
       <div className="min-w-0">
-        <div className={`font-display text-xl font-bold tabular-nums ${c.text}`}>
-          {value}
-        </div>
-        <div className="text-[10px] font-bold text-foreground/60 uppercase tracking-wider">
+        <div className="text-xl font-bold tabular-nums text-foreground">{value}</div>
+        <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           {label}
         </div>
       </div>
     </div>
+  );
+}
+
+function MetricsShell({ children }: { children: React.ReactNode }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Metrics</CardTitle>
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </Card>
   );
 }
 
@@ -68,51 +70,63 @@ export default function MetricsPanel() {
 
   if (error) {
     return (
-      <Card>
-        <CardHeader><CardTitle>Metrics</CardTitle></CardHeader>
-        <CardContent>
-          <p className="text-sm text-coral-ink font-semibold">{error}</p>
-        </CardContent>
-      </Card>
+      <MetricsShell>
+        <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+          <WifiOff className="h-7 w-7 text-state-failed" aria-hidden="true" />
+          <p className="text-sm font-medium text-foreground">Metrics unavailable</p>
+          <p className="max-w-xs text-xs text-muted-foreground">
+            Could not reach the queue API. Start the backend and this panel will
+            populate automatically.
+          </p>
+        </div>
+      </MetricsShell>
     );
   }
 
   if (!metrics) {
     return (
-      <Card>
-        <CardHeader><CardTitle>Metrics</CardTitle></CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        </CardContent>
-      </Card>
+      <MetricsShell>
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-[62px] animate-pulse rounded-lg border border-border bg-muted/40"
+            />
+          ))}
+        </div>
+      </MetricsShell>
     );
   }
 
   return (
-    <Card>
-      <CardHeader><CardTitle>Metrics</CardTitle></CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-          <StatCard label="Processed" value={metrics.total_processed} icon={CheckCircle} tone="mint" />
-          <StatCard label="Failed" value={metrics.total_failed} icon={XCircle} tone="coral" />
-          <StatCard label="Retries" value={metrics.total_retries} icon={RotateCcw} tone="sunny" />
-          <StatCard label="Queue Size" value={metrics.queue_size} icon={Layers} tone="sky" />
-          <StatCard label="Active Workers" value={metrics.active_workers} icon={Users} tone="aqua" />
-          <StatCard label="Delayed" value={metrics.delayed_queue_size} icon={Clock} tone="sunny" />
-          <StatCard label="Dead Letter" value={metrics.dead_letter_size} icon={Skull} tone="coral" />
-          <StatCard label="Submitted" value={metrics.total_submitted} icon={Activity} tone="grape" />
+    <MetricsShell>
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          <StatCard label="Processed" value={metrics.total_processed} icon={CheckCircle} tone="succeeded" />
+          <StatCard label="Failed" value={metrics.total_failed} icon={XCircle} tone="failed" />
+          <StatCard label="Retries" value={metrics.total_retries} icon={RotateCcw} tone="retrying" />
+          <StatCard label="Queue Size" value={metrics.queue_size} icon={Layers} tone="queued" />
+          <StatCard label="Active Workers" value={metrics.active_workers} icon={Users} tone="running" />
+          <StatCard label="Delayed" value={metrics.delayed_queue_size} icon={Clock} tone="leased" />
+          <StatCard label="Dead Letter" value={metrics.dead_letter_size} icon={Skull} tone="failed" />
+          <StatCard label="Submitted" value={metrics.total_submitted} icon={Activity} tone="neutral" />
         </div>
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-foreground/70">Success Rate</span>
-            <span className="font-display text-sm font-bold tabular-nums text-mint-ink">
+            <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+              Success Rate
+            </span>
+            <span className="text-sm font-bold tabular-nums text-state-succeeded">
               {metrics.success_rate.toFixed(1)}%
             </span>
           </div>
-          <Progress value={metrics.success_rate} />
+          <Progress
+            value={metrics.success_rate}
+            className="bg-state-succeeded/15 [&>[data-slot=progress-indicator]]:bg-state-succeeded"
+          />
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </MetricsShell>
   );
 }

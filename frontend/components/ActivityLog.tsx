@@ -40,7 +40,7 @@ function EventRow({ event }: { event: TaskEvent }) {
         {event.type}
       </Badge>
       <span className="text-xs text-foreground truncate">
-        <span className="font-semibold text-state-queued">{event.task_id}</span>
+        <span className="font-mono font-medium text-state-queued">{event.task_id}</span>
         {event.worker_id >= 0 && (
           <span className="text-muted-foreground"> W{event.worker_id}</span>
         )}
@@ -75,8 +75,8 @@ export default function ActivityLog() {
             <Terminal className="w-4 h-4" />
             Activity Log
           </CardTitle>
-          <span className="text-[10px] text-muted-foreground">
-            {events ? `${events.length} events` : "loading..."}
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+            {events ? `${events.length} events` : "loading…"}
           </span>
         </div>
       </CardHeader>
@@ -87,14 +87,27 @@ export default function ActivityLog() {
           className="activity-log"
         >
           <AnimatePresence initial={false}>
-            {events?.map((ev) => (
-              <EventRow key={ev.id} event={ev} />
-            ))}
+            {(() => {
+              // Backend event ids can collide (evt-<nanotimestamp> when several
+              // events fire in the same tick), so disambiguate duplicates into
+              // stable, unique keys — deterministic per render order.
+              const seen = new Map<string, number>();
+              return events?.map((ev) => {
+                const n = (seen.get(ev.id) ?? 0) + 1;
+                seen.set(ev.id, n);
+                return (
+                  <EventRow key={n === 1 ? ev.id : `${ev.id}#${n}`} event={ev} />
+                );
+              });
+            })()}
           </AnimatePresence>
           {(!events || events.length === 0) && (
-            <p className="text-xs text-muted-foreground italic">
-              No events yet. Submit some tasks!
-            </p>
+            <div className="flex flex-col items-center justify-center gap-1.5 py-10 text-center">
+              <Terminal className="h-6 w-6 text-muted-foreground/60" aria-hidden="true" />
+              <p className="font-sans text-xs text-muted-foreground">
+                No events yet — submit a task to see the stream.
+              </p>
+            </div>
           )}
         </div>
       </CardContent>

@@ -167,21 +167,24 @@ export default function TaskSubmissionPanel() {
                 onChange={(e) => setMaxRetries(Number(e.target.value))}
               />
             </div>
-            <Button className="w-full" disabled={submitting} type="submit">
+            <Button className="w-full cursor-pointer" disabled={submitting} type="submit">
               <Send className="w-4 h-4" />
-              {submitting && !batchProgress ? "Submitting..." : "Submit Task"}
+              {submitting && !batchProgress ? "Submitting…" : "Submit Task"}
             </Button>
           </form>
 
           {/* Batch submit buttons */}
           <div className="space-y-1.5">
-            <Label>Batch Submit</Label>
+            <Label className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+              Batch Submit
+            </Label>
             <div className="grid grid-cols-3 gap-2">
               {BATCH_SIZES.map((size) => (
                 <Button
                   key={size}
                   variant="secondary"
                   size="sm"
+                  className="cursor-pointer tabular-nums"
                   disabled={submitting}
                   onClick={() => openBatchDialog(size)}
                   type="button"
@@ -201,7 +204,7 @@ export default function TaskSubmissionPanel() {
           {/* Flush data */}
           <div className="border-t border-border pt-3">
             <Button
-              className="w-full"
+              className="w-full cursor-pointer"
               variant="destructive"
               size="sm"
               disabled={submitting}
@@ -244,10 +247,10 @@ export default function TaskSubmissionPanel() {
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setFlushDialogOpen(false)}>
+          <Button variant="outline" size="sm" className="cursor-pointer" onClick={() => setFlushDialogOpen(false)}>
             Cancel
           </Button>
-          <Button variant="destructive" size="sm" onClick={handleFlush}>
+          <Button variant="destructive" size="sm" className="cursor-pointer" onClick={handleFlush}>
             <Trash2 className="w-3.5 h-3.5" />
             Yes, Clear Everything
           </Button>
@@ -321,10 +324,10 @@ export default function TaskSubmissionPanel() {
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setBatchDialogOpen(false)}>
+          <Button variant="outline" size="sm" className="cursor-pointer" onClick={() => setBatchDialogOpen(false)}>
             Cancel
           </Button>
-          <Button size="sm" onClick={executeBatch}>
+          <Button size="sm" className="cursor-pointer tabular-nums" onClick={executeBatch}>
             <Shuffle className="w-3.5 h-3.5" />
             Send {batchCount.toLocaleString()} Tasks
           </Button>
