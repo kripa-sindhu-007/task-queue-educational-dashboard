@@ -67,7 +67,7 @@ type Node struct {
 	Capacity  int       `json:"capacity"` // number of executor goroutines
 	StartedAt time.Time `json:"started_at"`
 	// Runtime fields, populated by NodeStore.ListNodes (not stored in the record):
-	Alive        bool  `json:"alive"`
+	Alive         bool  `json:"alive"`
 	InFlightTasks int64 `json:"in_flight_tasks"`
 }
 

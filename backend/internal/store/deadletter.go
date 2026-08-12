@@ -43,7 +43,6 @@ func (d *DeadLetterStore) List(ctx context.Context, offset, limit int64) ([]mode
 	return tasks, nil
 }
 
-
 // DrainAll pops all entries from the dead-letter list and returns the tasks.
 // Used by the redrive endpoint to move failed tasks back into the ready queue.
 func (d *DeadLetterStore) DrainAll(ctx context.Context) ([]model.FailedTask, error) {

@@ -106,7 +106,6 @@ func TestGetTaskByID(t *testing.T) {
 	}
 }
 
-
 // GET /api/nodes returns registered cluster nodes with liveness. When no
 // NodeStore is wired (or none registered) it returns an empty array, never null.
 func TestGetNodes(t *testing.T) {
