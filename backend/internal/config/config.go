@@ -47,10 +47,10 @@ func Load() (*Config, error) {
 		VisibilityTimeout: getEnvMillis("VISIBILITY_TIMEOUT_MS", 30000), // 30s default
 		ReaperInterval:    getEnvMillis("REAPER_INTERVAL_MS", 5000),     // 5s default
 
-		RunWorkers:        getEnvBool("RUN_WORKERS", true),                // in-process workers on by default (single-binary)
-		HeartbeatInterval: getEnvMillis("HEARTBEAT_INTERVAL_MS", 3000),    // 3s beat
-		HeartbeatTTL:      getEnvMillis("HEARTBEAT_TTL_MS", 10000),        // 10s expiry (tolerates missed beats)
-		NodeGraceWindow:   getEnvMillis("DEAD_NODE_GRACE_MS", 30000),      // 30s dead-card visibility before prune
+		RunWorkers:        getEnvBool("RUN_WORKERS", true),             // in-process workers on by default (single-binary)
+		HeartbeatInterval: getEnvMillis("HEARTBEAT_INTERVAL_MS", 3000), // 3s beat
+		HeartbeatTTL:      getEnvMillis("HEARTBEAT_TTL_MS", 10000),     // 10s expiry (tolerates missed beats)
+		NodeGraceWindow:   getEnvMillis("DEAD_NODE_GRACE_MS", 30000),   // 30s dead-card visibility before prune
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),

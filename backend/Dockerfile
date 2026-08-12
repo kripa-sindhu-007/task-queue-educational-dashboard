@@ -2,10 +2,12 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod ./
+# Cache the dependency layer: only re-downloads when go.mod/go.sum change.
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
-RUN go mod tidy && \
-    CGO_ENABLED=0 go build -o /server ./cmd/server && \
+RUN CGO_ENABLED=0 go build -o /server ./cmd/server && \
     CGO_ENABLED=0 go build -o /worker ./cmd/worker
 
 FROM alpine:3.19

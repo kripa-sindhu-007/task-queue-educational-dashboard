@@ -223,7 +223,6 @@ func TestReaper_BatchesLargeReclaims(t *testing.T) {
 	}
 }
 
-
 // TestReaper_OrphanInProcessing covers the case where a task ID sits in the
 // processing set but its canonical record was flushed. The reaper must remove
 // the orphan from processing without re-enqueueing it to ready or dead-lettering.
@@ -263,7 +262,6 @@ func TestReaper_OrphanInProcessing(t *testing.T) {
 		t.Fatalf("expected DLQ=0 (orphan not dead-lettered), got %d", dlSize)
 	}
 }
-
 
 // TestReaper_DeadNodeEagerReclaim covers P2.3: a node whose heartbeat has
 // expired (still in the registry, no hb key) has ALL its in-flight tasks
