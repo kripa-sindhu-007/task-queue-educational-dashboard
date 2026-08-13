@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
 )
@@ -55,5 +58,68 @@ func TestPromoteDueTasks(t *testing.T) {
 	}
 	if got == nil || got.ID != "due" {
 		t.Fatalf("expected 'due' promoted, got %+v", got)
+	}
+}
+
+// TestPromoteRingsDoorbell covers P3.4: promoting N due tasks pushes N doorbell
+// tokens (one per promoted ID), while the returned promotion count is unchanged.
+func TestPromoteRingsDoorbell(t *testing.T) {
+	ctx := context.Background()
+	tasks, q := newTestDeps(t)
+	sched := NewDelayedScheduler(q.client, q, tasks, nil, nil)
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		task := model.Task{ID: "d" + string(rune('0'+i)), Priority: 1, Status: model.StatusPending}
+		if err := tasks.Save(ctx, task); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		if err := sched.Schedule(ctx, task, -time.Second); err != nil {
+			t.Fatalf("schedule: %v", err)
+		}
+	}
+
+	sched.promoteDueTasks(ctx)
+
+	if size, _ := q.Size(ctx); size != n {
+		t.Fatalf("expected ready=%d after promotion, got %d", n, size)
+	}
+	if tokens, _ := q.client.LLen(ctx, store.KeyReadySignal).Result(); tokens != n {
+		t.Fatalf("expected %d doorbell tokens after promoting %d tasks, got %d", n, n, tokens)
+	}
+}
+
+// TestPromoteDoorbellRespectsCap proves the inline per-ID push honors SignalCap:
+// promoting more tasks than the cap still promotes them all but never grows the
+// doorbell past the cap.
+func TestPromoteDoorbellRespectsCap(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { client.Close() })
+
+	const cap = 2
+	tasks := store.NewTaskStore(client)
+	q := NewPriorityQueue(client, tasks, cap)
+	sched := NewDelayedScheduler(client, q, tasks, nil, nil)
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		task := model.Task{ID: "c" + string(rune('0'+i)), Priority: 1, Status: model.StatusPending}
+		if err := tasks.Save(ctx, task); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		if err := sched.Schedule(ctx, task, -time.Second); err != nil {
+			t.Fatalf("schedule: %v", err)
+		}
+	}
+
+	sched.promoteDueTasks(ctx)
+
+	if size, _ := q.Size(ctx); size != n {
+		t.Fatalf("expected all %d tasks promoted, got ready=%d", n, size)
+	}
+	if tokens, _ := client.LLen(ctx, store.KeyReadySignal).Result(); tokens != cap {
+		t.Fatalf("expected doorbell capped at %d, got %d", cap, tokens)
 	}
 }

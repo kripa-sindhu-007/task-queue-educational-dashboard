@@ -17,11 +17,11 @@
 
 | Field | Value |
 |---|---|
-| **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) ✅ done; P3.3–P3.8 todo. |
-| **Current task** | P3.3 (Prometheus + Grafana in compose) — next. `/metrics` now exposed on server `:8080` and workers `:9100`. |
+| **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) + P3.4 (blocking pickup) ✅ done; P3.3, P3.5–P3.8 todo. |
+| **Current task** | P3.3 (Prometheus + Grafana in compose) — next. `/metrics` on server `:8080` and workers `:9100`; blocking pickup (doorbell) now live. |
 | **Last updated** | 2026-08-13 |
-| **Last session** | 2026-08-13 — P3.1 structured logging (injected slog JSON, no globals) + P3.2 Prometheus metrics (new `internal/telemetry/`, 5 metrics). Verified live vs a real Redis (metrics scrape + JSON logs) and via a `golang:1.25-alpine` Docker build; 53 tests green. |
-| **Hours spent / budget** | ~37 / ~100 |
+| **Last session** | 2026-08-13 — P3.4 blocking task pickup: doorbell (`BLPOP taskqueue:ready:signal`) replaces worker sleep-polling; `dequeue.lua` byte-for-byte unchanged (at-least-once preserved). All 4 ready-producers ring a cap-guarded doorbell (`signal.lua` + inline in `promote.lua`/`reclaim.lua`). New `SignalBlock`/`SignalCap` config; explicit go-redis `PoolSize ≥ WorkerCount + headroom`. 68 tests green (+15) incl. real-Redis integration; measured p99 `enqueue_to_start` ~495 ms → ~0.86 ms at low/bursty load (`docs/BENCHMARKS.md`). |
+| **Hours spent / budget** | ~40 / ~100 |
 | **Blockers** | none |
 
 ---
@@ -155,7 +155,7 @@ cluster; the broker detects dead nodes and reclaims their work.
 | P3.1 | ☑ Replace all `log.Printf` with `log/slog` JSON, keyed by `task_id`/`node_id`; logger injected, not global | done | Root JSON logger built in both `main`s, threaded through the Phase-0 Deps seams (`ExecutorDeps`, `reaper.Config`, `NodeConfig`, `HandlerDeps`, `NewRouter`); every constructor falls back to `slog.Default()` when nil, so existing tests were untouched. `rg '"log"' cmd internal` empty |
 | P3.2 | ☑ Prometheus `/metrics` on broker AND workers: `tasks_processed_total{type,status}`, `task_duration_seconds` histogram, `queue_depth`, `enqueue_to_start_seconds` histogram, `reaper_reclaims_total` | done | New `internal/telemetry/` on a dedicated (non-global) registry; `queue_depth` is a scrape-time collector via `QueuePeekStore`. Server serves `/metrics` on `:8080`; worker got a minimal HTTP server on `METRICS_PORT` (default `:9100`). `enqueue_to_start_seconds` sourced from `Task.CreatedAt` (overcounts delayed/retried — precise `ReadyAt` deferred). Verified live |
 | P3.3 | ☐ Prometheus + Grafana in compose; ONE committed dashboard JSON in `deploy/grafana/` | todo | Timebox Grafana to one good dashboard |
-| P3.4 | ☐ Replace worker sleep-polling with blocking `BZPOPMIN` (timeout = shutdown-check interval); measure & record the latency improvement | todo | Needs care with the Lua lease script — see Decision Log |
+| P3.4 | ☑ Replace worker sleep-polling with blocking pickup (timeout = shutdown-check interval); measure & record the latency improvement | done | **Doorbell, not literal `BZPOPMIN`** (see Decision Log + Known Gotchas). Idle workers `BLPOP taskqueue:ready:signal <SignalBlock>` instead of `time.Sleep`; `dequeue.lua` unchanged so at-least-once + priority hold. All 4 ready-producers push one cap-guarded token: `PriorityQueue.Enqueue` (Go `signal.lua`), `promote.lua` + `reclaim.lua` `"reclaimed"` branch (inline). New `SignalBlock` (1s; = block = shutdown-check = fallback-poll) + `SignalCap` (1024) config; explicit `PoolSize ≥ WorkerCount + headroom`. Measured ~495 ms → ~0.86 ms p99 at low/bursty load (`docs/BENCHMARKS.md`) |
 | P3.5 | ☐ `cmd/loadgen`: configurable rate, duration, task-type mix | todo | Hand-rolled, no k6 |
 | P3.6 | ☐ Backpressure: max queue depth → `429` + `Retry-After` on submit | todo | |
 | P3.7 | ☐ Benchmarks: before/after poll-vs-blocking; sustained 30-min soak asserting zero lost tasks; record machine specs | todo | |
@@ -223,15 +223,18 @@ cluster; the broker detects dead nodes and reclaims their work.
 | 2026-08-13 | Toolchain bumped **Go 1.22 → 1.25** (go.mod, CI `go-version`, `backend/Dockerfile`) | `prometheus/client_golang v1.24.1` (P3.2's one new dep) declares `go 1.25.0`; keeping the latest security-patched metrics client was preferred over pinning an older client_golang to stay on 1.22 |
 | 2026-08-13 | P3.2 telemetry on a **dedicated** `prometheus.Registry`, not the global default; every constructor's injected logger/telemetry is **nil-tolerant** | Dedicated registry avoids duplicate-registration panics across tests; nil-tolerance let the ~40 existing tests compile without threading a logger/telemetry (same pattern as `WorkerState`/`Events`) |
 | 2026-08-13 | `enqueue_to_start_seconds` sourced from `Task.CreatedAt`, not a new `ReadyAt` field | Zero schema/Lua change; exact for the zero-delay loadgen workload P3 targets. A precise `ReadyAt` (needs `promote.lua`/`reclaim.lua` edits) is deferred until a task needs sub-second accuracy for delayed/retried tasks |
+| 2026-08-13 | **P3.4 resolved via a doorbell wake-up signal, NOT literal `BZPOPMIN taskqueue:ready`** | `BZPOPMIN` on the ready ZSET would pop the task ID into worker memory and only *then* write it to `processing` in a second round trip — a `kill -9` in that gap loses the task (it's in neither set), reintroducing the exact crash-loss window P1.2 closed. Instead `dequeue.lua` stays byte-for-byte unchanged (atomic `ZPOPMIN → processing`) and idle workers `BLPOP` a pure notification list `taskqueue:ready:signal`; producers ring it. Tokens carry no task identity and are never read for correctness — a lost token costs ≤ `SignalBlock` latency, never a task. Priority ordering also preserved (`ZPOPMIN` still picks, regardless of FIFO token order) |
+| 2026-08-13 | Doorbell push is **cap-guarded** (`LLEN < SignalCap` before `RPUSH`) and shared as `signal.lua`, inlined into `promote.lua`/`reclaim.lua` | Bounds the signal list from growing to queue depth when all workers are busy; any token beyond the number of blocked workers is redundant (the busy worker re-claims via try-then-block, and the fallback poll re-claims regardless). One embedded script keeps the cap logic in exactly one place for the Go path; Lua can't `//go:embed`-compose so the two batch scripts inline the same two lines |
+| 2026-08-13 | Graceful shutdown relies on the **bounded `SignalBlock` block returning**, not on ctx interrupting an in-flight `BLPOP` | Verified against real Redis: go-redis does **not** abort a `BLPOP` already in flight when its context is cancelled (it runs to the timeout); a call issued with an *already-cancelled* ctx returns `context.Canceled`. So a worker exits within ≤ `SignalBlock` (1s) of cancellation — well inside the 5s drain / 10s HTTP-shutdown budgets. Also learned: go-redis floors sub-second `BLPOP` timeouts at 1s, so `SignalBlock=1s` is the practical minimum |
 
 ---
 
 ## ⚠️ Known Gotchas (context for future sessions)
 
-- **P3.4 vs P1.2 tension:** `BZPOPMIN` can't run inside a Lua script (scripts can't block).
-  Resolution path: blocking pop as a *wake-up signal* then atomic Lua claim, or
-  `BZPOPMIN` + immediately write to processing set (tiny loss window — measure and decide).
-  Decide when you get there; record in Decision Log.
+- ~~**P3.4 vs P1.2 tension:** `BZPOPMIN` can't run inside a Lua script.~~ **Resolved (2026-08-13):**
+  shipped the wake-up-signal path — idle workers `BLPOP taskqueue:ready:signal` (a pure
+  doorbell) then run the unchanged atomic Lua claim. `dequeue.lua` untouched; at-least-once
+  intact. The `BZPOPMIN`-direct option was rejected (loss window). See Decision Log.
 - The delayed scheduler currently double-runs safely across replicas only because of the
   `ZREM` returned-count check (`delayed.go`) — after P4.2 it's leader-only anyway.
 - `DELETE /api/flush` must be gated behind a `DEV_MODE` flag before any public deploy.
@@ -268,6 +271,16 @@ cluster; the broker detects dead nodes and reclaims their work.
 - **Next:** finish P1.3 tests, then start P1.4
 - **Blockers:** none
 ```
+
+---
+
+### 2026-08-13 — Phase 3 P3.4 blocking task pickup (doorbell) (~3h)
+- **Done:** Replaced worker sleep-polling with a **doorbell**. Idle workers now block on `BLPOP taskqueue:ready:signal <SignalBlock>` (new `broker.WaitForReady` → `PriorityQueue.WaitReady`) instead of `time.Sleep(PollInterval)`; on wake they run the **unchanged** atomic claim (`dequeue.lua` byte-for-byte identical → at-least-once + priority preserved). All four ready-producers ring a **cap-guarded** doorbell: `PriorityQueue.Enqueue` (Submit + RedriveFailed) via a shared `signal.lua` (`LLEN < cap` then `RPUSH`); `promote.lua` (delayed→ready) and `reclaim.lua` **`"reclaimed"` branch only** inline the same two lines (atomic with their `ZADD ready`); the `dead_lettered`/`orphan`/`lost_race` branches push nothing. New config `SignalBlock` (`SIGNAL_BLOCK_MS`, default 1000 — one knob = BLPOP block = shutdown-check granularity = fallback-poll backstop) and `SignalCap` (`SIGNAL_CAP`, default 1024), with validation; `PollInterval` kept as the Dequeue-**error** back-off only. `NewRedisClient` now sets an explicit go-redis `PoolSize = WorkerCount + 10` (blocked `BLPOP`s hold connections; too small a pool starves heartbeats → false-dead nodes); both mains pass `cfg.WorkerCount`. Threaded `SignalBlock`/`SignalCap` through `cmd/server` + `cmd/worker` (in-process pool gets it for free).
+- **Verified:** 68 tests green (`go test ./... -race -count=1`, was 53 → +15: pool-size, config defaults/validation, signal push/cap, Enqueue doorbell, promote×3 + cap, reclaim-branch-only + orphan-no-push, WaitForReady unblock, pool doorbell-wake + no-token fallback) + `go vet ./...` + `gofmt -l cmd internal` clean. **Real-Redis integration** (`//go:build integration`, Docker `redis:7-alpine` on `:6399`, `make test-integration` equivalent) all green: BLPOP block-timeout ~1s, already-cancelled-ctx returns promptly, full pool drains within `SignalBlock` after cancel, and the latency capture. Both binaries start live (server in-process pool `signal_block=1s`; worker `/metrics` 200).
+- **Measured (`docs/BENCHMARKS.md`, Apple M5 / 16 GB):** `enqueue_to_start` p50/p99 **~250 ms / ~495 ms (sleep-poll) → ~0.35 ms / ~0.86 ms (doorbell)** at low/bursty load — a ~1000× wake-time cut. **Honest caveat:** no win under saturation (queue never empty → worker never blocks; the two are equivalent). The doorbell removes polling dead-time, not per-task cost.
+- **Learned/decided:** go-redis **floors sub-second `BLPOP` timeouts at 1s** (so `SignalBlock=1s` is the practical minimum) and does **not** interrupt an in-flight `BLPOP` on mid-block ctx-cancel — shutdown is bounded by the block *returning*, exactly as planned (an already-cancelled ctx does return `context.Canceled`). Both nailed down in the integration test because miniredis's BLPOP timeout uses real wall-clock and ignores `mr.FastForward`.
+- **Next:** P3.3 (Prometheus + Grafana in compose, one dashboard JSON) or P3.5 (`cmd/loadgen`), then P3.6 backpressure and the P3.7 soak.
+- **Blockers:** none
 
 ---
 

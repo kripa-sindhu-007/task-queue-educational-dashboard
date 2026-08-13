@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -15,7 +16,8 @@ type Pool struct {
 	broker       broker.Broker
 	executor     *Executor
 	workerCount  int
-	pollInterval time.Duration
+	pollInterval time.Duration // P3.4: only the short back-off after a Dequeue *error* now
+	signalBlock  time.Duration // P3.4: how long a worker blocks on the doorbell when the queue is empty
 	activeCount  atomic.Int64
 	wg           sync.WaitGroup
 	workerState  *store.WorkerStateStore
@@ -27,6 +29,7 @@ func NewPool(
 	executor *Executor,
 	workerCount int,
 	pollInterval time.Duration,
+	signalBlock time.Duration,
 	workerState *store.WorkerStateStore,
 	logger *slog.Logger,
 ) *Pool {
@@ -38,6 +41,7 @@ func NewPool(
 		executor:     executor,
 		workerCount:  workerCount,
 		pollInterval: pollInterval,
+		signalBlock:  signalBlock,
 		workerState:  workerState,
 		logger:       logger,
 	}
@@ -54,7 +58,7 @@ func (p *Pool) Start(ctx context.Context) {
 		}
 		go p.worker(ctx, i)
 	}
-	p.logger.Info("started workers", "count", p.workerCount, "poll_interval", p.pollInterval)
+	p.logger.Info("started workers", "count", p.workerCount, "signal_block", p.signalBlock, "poll_interval", p.pollInterval)
 }
 
 // Wait blocks until all workers have finished.
@@ -92,8 +96,23 @@ func (p *Pool) worker(ctx context.Context, id int) {
 		}
 
 		if task == nil {
-			// Queue empty, wait before polling again
-			time.Sleep(p.pollInterval)
+			// Queue empty: block on the doorbell (P3.4) instead of sleep-polling.
+			// WaitForReady returns when a producer rings the doorbell (a task may be
+			// ready — loop and re-Dequeue) or after signalBlock with no token (the
+			// fallback-poll backstop — loop and re-Dequeue anyway, so a missed token
+			// costs at most signalBlock of latency and never a lost task). The
+			// bounded block also caps shutdown latency: on ctx cancellation the block
+			// returns within signalBlock (or immediately with context.Canceled), the
+			// loop re-checks ctx.Done() at the top, and the worker exits cleanly.
+			if err := p.broker.WaitForReady(ctx, p.signalBlock); err != nil {
+				if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+					return // shutdown — clean exit, no error log
+				}
+				// A real Redis fault: log and fall back to the poll-interval back-off
+				// so we don't hot-loop on a persistent error.
+				logger.Error("worker wait-for-ready error", "error", err)
+				time.Sleep(p.pollInterval)
+			}
 			continue
 		}
 

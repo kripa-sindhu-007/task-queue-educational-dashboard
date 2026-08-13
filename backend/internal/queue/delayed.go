@@ -73,8 +73,8 @@ func (d *DelayedScheduler) promoteDueTasks(ctx context.Context) {
 	batchSize := int64(100)
 
 	promoted, err := d.promoteCmd.Run(ctx, d.client,
-		[]string{store.KeyDelayed, store.KeyReady, store.KeyTaskPrefix},
-		now, batchSize,
+		[]string{store.KeyDelayed, store.KeyReady, store.KeyTaskPrefix, store.KeyReadySignal},
+		now, batchSize, d.queue.signalCap,
 	).Int64()
 	if err != nil && err != redis.Nil {
 		d.logger.Error("error promoting delayed tasks", "error", err)

@@ -21,7 +21,7 @@ func setup(t *testing.T) (*redis.Client, *broker.RedisBroker, *store.TaskStore) 
 	t.Cleanup(func() { client.Close() })
 
 	taskStore := store.NewTaskStore(client)
-	pq := queue.NewPriorityQueue(client, taskStore)
+	pq := queue.NewPriorityQueue(client, taskStore, queue.DefaultSignalCap)
 	delayed := queue.NewDelayedScheduler(client, pq, taskStore, nil, nil)
 	b := broker.NewRedisBroker(client, taskStore, pq, delayed, 30*time.Second, "test-node")
 
@@ -229,5 +229,28 @@ func TestExtendLease_NotHeld(t *testing.T) {
 	err := b.ExtendLease(ctx, "nonexistent", 30*time.Second)
 	if err != broker.ErrLeaseNotHeld {
 		t.Fatalf("expected ErrLeaseNotHeld, got %v", err)
+	}
+}
+
+// TestWaitForReady_UnblocksAfterEnqueue covers P3.4: Enqueue rings the doorbell,
+// so a subsequent WaitForReady with a long timeout returns promptly (the token
+// woke it) rather than blocking the full timeout.
+func TestWaitForReady_UnblocksAfterEnqueue(t *testing.T) {
+	_, b, _ := setup(t)
+	ctx := context.Background()
+
+	// Enqueue leaves a wake-up token in the doorbell.
+	if err := b.Enqueue(ctx, makeTask("task-1", 5, 3)); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	start := time.Now()
+	// A generous 5s timeout: with a token present the BLPOP returns immediately,
+	// so elapsed must be far below the timeout — proving the wake, not a timeout.
+	if err := b.WaitForReady(ctx, 5*time.Second); err != nil {
+		t.Fatalf("WaitForReady: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("WaitForReady blocked %v; expected prompt wake from the doorbell token", elapsed)
 	}
 }

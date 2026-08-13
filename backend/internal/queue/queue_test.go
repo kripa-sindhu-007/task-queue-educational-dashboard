@@ -20,7 +20,7 @@ func newTestDeps(t *testing.T) (*store.TaskStore, *PriorityQueue) {
 	t.Cleanup(mr.Close)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	tasks := store.NewTaskStore(client)
-	return tasks, NewPriorityQueue(client, tasks)
+	return tasks, NewPriorityQueue(client, tasks, DefaultSignalCap)
 }
 
 // enqueue persists the record (as the broker/handler would) then enqueues the ID.

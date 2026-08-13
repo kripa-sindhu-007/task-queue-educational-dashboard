@@ -18,7 +18,16 @@ const (
 	KeyWorkers       = "taskqueue:workers"
 	KeyNodes         = "taskqueue:nodes"          // Phase 2: registry SET of known node IDs
 	KeyEventsCluster = "taskqueue:events:cluster" // retained list of lifecycle-only events (node_joined/node_dead/reclaimed)
+	KeyReadySignal   = "taskqueue:ready:signal"   // P3.4: doorbell list — one wake-up token per newly-ready task (see queue.Signal)
 )
+
+// poolHeadroom is the number of connections reserved on top of WorkerCount when
+// sizing the go-redis pool. Each idle worker holds a connection for up to
+// SignalBlock while blocked on the doorbell BLPOP, so the pool must leave room
+// for heartbeats, claims/acks, the reaper and the delayed scheduler to run
+// without starving — a starved heartbeat looks like a dead node and triggers a
+// spurious reclaim.
+const poolHeadroom = 10
 
 // NodeHeartbeatKey returns the TTL key whose existence signals a node is alive.
 func NodeHeartbeatKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":hb" }
@@ -36,14 +45,20 @@ func NodeMetaKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":m
 // reclaim-once plus the prune grace window.
 func NodeDeadKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":dead" }
 
-func NewRedisClient(addr, password string, logger *slog.Logger) *redis.Client {
+// NewRedisClient dials Redis and sizes the connection pool for the doorbell
+// (P3.4). workerCount idle workers each hold a connection while blocked on the
+// BLPOP doorbell, so PoolSize is set to workerCount + poolHeadroom to keep
+// heartbeats/claims/acks/reaper/scheduler from starving.
+func NewRedisClient(addr, password string, workerCount int, logger *slog.Logger) *redis.Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	poolSize := workerCount + poolHeadroom
 	client := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       0,
+		PoolSize: poolSize,
 	})
 
 	ctx := context.Background()

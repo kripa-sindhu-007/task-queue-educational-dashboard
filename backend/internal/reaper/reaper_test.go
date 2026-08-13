@@ -94,6 +94,67 @@ func TestReaper_ReclaimsExpiredLease(t *testing.T) {
 	}
 }
 
+// TestReaper_ReclaimedBranchRingsDoorbell covers P3.4: a lease-expiry reclaim
+// (the only branch that puts a task back in ready) pushes exactly one doorbell
+// token, while a dead-lettered reclaim (retries exhausted) pushes none.
+func TestReaper_ReclaimedBranchRingsDoorbell(t *testing.T) {
+	client, tasks, dl, events, metrics := setup(t)
+	ctx := context.Background()
+
+	// One task that will be reclaimed (retries remain), one that will be
+	// dead-lettered (retries exhausted). Only the reclaimed one rings the doorbell.
+	reclaimable := model.Task{
+		ID: "ring-me", Type: "test", Priority: 5, MaxRetries: 3, Retries: 0,
+		Status: model.StatusProcessing, CreatedAt: time.Now(),
+	}
+	exhausted := model.Task{
+		ID: "no-ring", Type: "test", Priority: 5, MaxRetries: 2, Retries: 2,
+		Status: model.StatusProcessing, CreatedAt: time.Now(),
+	}
+	past := time.Now().Add(-10 * time.Second).UnixMilli()
+	simulateLeasedTask(ctx, t, client, tasks, reclaimable, past)
+	simulateLeasedTask(ctx, t, client, tasks, exhausted, past)
+
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
+		Interval:  50 * time.Millisecond,
+		BatchSize: 10,
+	})
+	reaperCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	r.Start(reaperCtx)
+
+	// Exactly one token — for the reclaimed task; the dead-lettered one pushed none.
+	tokens, _ := client.LLen(ctx, store.KeyReadySignal).Result()
+	if tokens != 1 {
+		t.Fatalf("expected exactly 1 doorbell token (reclaimed branch only), got %d", tokens)
+	}
+}
+
+// TestReaper_OrphanBranchPushesNoDoorbell proves the orphan branch (record
+// vanished) rings no doorbell — nothing became ready.
+func TestReaper_OrphanBranchPushesNoDoorbell(t *testing.T) {
+	client, tasks, dl, events, metrics := setup(t)
+	ctx := context.Background()
+
+	// ID in processing with an expired deadline but NO task record => orphan.
+	client.ZAdd(ctx, store.KeyProcessing, redis.Z{
+		Score:  float64(time.Now().Add(-10 * time.Second).UnixMilli()),
+		Member: "orphan-task",
+	})
+
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
+		Interval:  50 * time.Millisecond,
+		BatchSize: 10,
+	})
+	reaperCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	r.Start(reaperCtx)
+
+	if tokens, _ := client.LLen(ctx, store.KeyReadySignal).Result(); tokens != 0 {
+		t.Fatalf("expected 0 doorbell tokens for orphan branch, got %d", tokens)
+	}
+}
+
 // TestReaper_IncrementsReclaimMetric covers P3.2c: each reclaimed lease bumps
 // reaper_reclaims_total on the injected telemetry registry.
 func TestReaper_IncrementsReclaimMetric(t *testing.T) {

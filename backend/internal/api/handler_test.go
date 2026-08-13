@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.TaskStore, *queue.Priorit
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	tasks := store.NewTaskStore(client)
-	q := queue.NewPriorityQueue(client, tasks)
+	q := queue.NewPriorityQueue(client, tasks, queue.DefaultSignalCap)
 	delayed := queue.NewDelayedScheduler(client, q, tasks, store.NewEventStore(client), nil)
 
 	h := NewHandler(HandlerDeps{

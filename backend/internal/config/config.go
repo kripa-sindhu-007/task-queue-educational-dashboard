@@ -14,8 +14,14 @@ type Config struct {
 	MetricsPort string // port the standalone worker serves /metrics on (server uses ServerPort)
 
 	WorkerCount  int
-	PollInterval time.Duration // how long a worker sleeps when the ready queue is empty
+	PollInterval time.Duration // P3.4: now only the short back-off sleep after a Dequeue *error* (the empty-queue wait is the doorbell)
 	DrainTimeout time.Duration // budget for post-cancellation Redis writes on shutdown
+
+	// P3.4: blocking task pickup (doorbell). SignalBlock is the single knob that
+	// is simultaneously the BLPOP block timeout, the shutdown-check granularity
+	// and the fallback-poll backstop; SignalCap bounds the doorbell list.
+	SignalBlock time.Duration // how long a worker blocks on the doorbell before looping to re-check ctx and re-poll
+	SignalCap   int           // max wake-up tokens retained in the doorbell list
 
 	// Phase 1: lease-based delivery
 	VisibilityTimeout time.Duration // how long a worker has to Ack before the reaper reclaims the task
@@ -45,6 +51,9 @@ func Load() (*Config, error) {
 		WorkerCount:  getEnvInt("WORKER_COUNT", 5),
 		PollInterval: getEnvMillis("POLL_INTERVAL_MS", 500),
 		DrainTimeout: getEnvMillis("DRAIN_TIMEOUT_MS", 5000),
+
+		SignalBlock: getEnvMillis("SIGNAL_BLOCK_MS", 1000), // 1s: doorbell block = shutdown-check = fallback-poll interval
+		SignalCap:   getEnvInt("SIGNAL_CAP", 1024),         // doorbell list bound
 
 		VisibilityTimeout: getEnvMillis("VISIBILITY_TIMEOUT_MS", 30000), // 30s default
 		ReaperInterval:    getEnvMillis("REAPER_INTERVAL_MS", 5000),     // 5s default
@@ -83,6 +92,12 @@ func (c *Config) validate() error {
 	}
 	if c.DrainTimeout <= 0 {
 		return fmt.Errorf("config: DRAIN_TIMEOUT_MS must be > 0")
+	}
+	if c.SignalBlock <= 0 {
+		return fmt.Errorf("config: SIGNAL_BLOCK_MS must be > 0")
+	}
+	if c.SignalCap <= 0 {
+		return fmt.Errorf("config: SIGNAL_CAP must be > 0, got %d", c.SignalCap)
 	}
 	if c.VisibilityTimeout <= 0 {
 		return fmt.Errorf("config: VISIBILITY_TIMEOUT_MS must be > 0")
