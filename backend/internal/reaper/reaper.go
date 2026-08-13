@@ -7,7 +7,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -15,16 +15,21 @@ import (
 
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/telemetry"
 )
 
 //go:embed scripts/reclaim.lua
 var reclaimScript string
 
-// Config holds reaper operational parameters.
+// Config holds reaper operational parameters. Logger and Metrics are optional
+// injection seams: a nil Logger falls back to slog.Default() and a nil Metrics
+// no-ops, keeping existing tests free of telemetry plumbing.
 type Config struct {
 	Interval        time.Duration // how often the reaper scans (e.g. 5s)
 	BatchSize       int64         // max expired tasks to process per tick (e.g. 100)
 	NodeGraceWindow time.Duration // how long a dead node stays visible (alive:false) before it's pruned
+	Logger          *slog.Logger
+	Metrics         *telemetry.Metrics
 }
 
 // Reaper periodically scans for (a) dead nodes, eagerly reclaiming all of their
@@ -39,6 +44,8 @@ type Reaper struct {
 	metrics    *store.MetricsStore
 	nodes      *store.NodeStore
 	cfg        Config
+	logger     *slog.Logger
+	telemetry  *telemetry.Metrics
 	reclaimCmd *redis.Script
 }
 
@@ -54,6 +61,10 @@ func New(
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 100
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Reaper{
 		client:     client,
 		tasks:      tasks,
@@ -62,6 +73,8 @@ func New(
 		metrics:    metrics,
 		nodes:      nodes,
 		cfg:        cfg,
+		logger:     logger,
+		telemetry:  cfg.Metrics,
 		reclaimCmd: redis.NewScript(reclaimScript),
 	}
 }
@@ -71,12 +84,12 @@ func (r *Reaper) Start(ctx context.Context) {
 	ticker := time.NewTicker(r.cfg.Interval)
 	defer ticker.Stop()
 
-	log.Printf("Reaper started (interval=%v, batch=%d)", r.cfg.Interval, r.cfg.BatchSize)
+	r.logger.Info("reaper started", "interval", r.cfg.Interval, "batch", r.cfg.BatchSize)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Reaper stopped")
+			r.logger.Info("reaper stopped")
 			return
 		case <-ticker.C:
 			r.reapDeadNodes(ctx)
@@ -104,14 +117,15 @@ func (r *Reaper) reapDeadNodes(ctx context.Context) {
 	}
 	dead, err := r.nodes.DeadNodeIDs(ctx)
 	if err != nil {
-		log.Printf("Reaper: error scanning for dead nodes: %v", err)
+		r.logger.Error("reaper: error scanning for dead nodes", "error", err)
 		return
 	}
 	now := time.Now()
 	for _, nodeID := range dead {
+		nodeLog := r.logger.With("node_id", nodeID)
 		firstTime, err := r.nodes.MarkDead(ctx, nodeID)
 		if err != nil {
-			log.Printf("Reaper: error marking node %s dead: %v", nodeID, err)
+			nodeLog.Error("reaper: error marking node dead", "error", err)
 			continue
 		}
 
@@ -119,11 +133,11 @@ func (r *Reaper) reapDeadNodes(ctx context.Context) {
 			// First observation of this death: reclaim its work and announce it once.
 			taskIDs, err := r.nodes.OwnedTaskIDs(ctx, nodeID)
 			if err != nil {
-				log.Printf("Reaper: error listing tasks for dead node %s: %v", nodeID, err)
+				nodeLog.Error("reaper: error listing tasks for dead node", "error", err)
 				continue
 			}
 			if len(taskIDs) > 0 {
-				log.Printf("Reaper: node %s is dead — reclaiming %d in-flight task(s)", nodeID, len(taskIDs))
+				nodeLog.Warn("reaper: node is dead, reclaiming in-flight tasks", "task_count", len(taskIDs))
 				r.emitEvent(ctx, "", "node_dead",
 					fmt.Sprintf("Node %s heartbeat expired; reclaiming %d task(s)", nodeID, len(taskIDs)))
 				for _, taskID := range taskIDs {
@@ -139,14 +153,14 @@ func (r *Reaper) reapDeadNodes(ctx context.Context) {
 		// elapsed so the DEAD card stays visible for a while.
 		deadSince, ok, err := r.nodes.DeadSince(ctx, nodeID)
 		if err != nil {
-			log.Printf("Reaper: error reading dead-since for node %s: %v", nodeID, err)
+			nodeLog.Error("reaper: error reading dead-since for node", "error", err)
 			continue
 		}
 		if !ok || now.Sub(deadSince) >= r.cfg.NodeGraceWindow {
 			if err := r.nodes.Remove(ctx, nodeID); err != nil {
-				log.Printf("Reaper: error removing dead node %s: %v", nodeID, err)
+				nodeLog.Error("reaper: error removing dead node", "error", err)
 			} else {
-				log.Printf("Reaper: pruned dead node %s after grace window", nodeID)
+				nodeLog.Info("reaper: pruned dead node after grace window")
 			}
 		}
 	}
@@ -163,7 +177,7 @@ func (r *Reaper) reap(ctx context.Context) {
 		Count: r.cfg.BatchSize,
 	}).Result()
 	if err != nil {
-		log.Printf("Reaper: error scanning processing set: %v", err)
+		r.logger.Error("reaper: error scanning processing set", "error", err)
 		return
 	}
 
@@ -171,7 +185,7 @@ func (r *Reaper) reap(ctx context.Context) {
 		return
 	}
 
-	log.Printf("Reaper: found %d expired leases to reclaim", len(ids))
+	r.logger.Info("reaper: found expired leases to reclaim", "count", len(ids))
 
 	for _, taskID := range ids {
 		r.reclaimTask(ctx, taskID)
@@ -180,16 +194,17 @@ func (r *Reaper) reap(ctx context.Context) {
 
 // reclaimTask atomically reclaims a single task via Lua script.
 func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
+	taskLog := r.logger.With("task_id", taskID)
 	// Load the task record to get maxRetries, retries, priority for the Lua script.
 	task, err := r.tasks.Get(ctx, taskID)
 	if err != nil {
 		if err == store.ErrTaskNotFound {
 			// Orphan in processing — just remove it.
 			r.client.ZRem(ctx, store.KeyProcessing, taskID)
-			log.Printf("Reaper: removed orphan %s from processing (no record)", taskID)
+			taskLog.Warn("reaper: removed orphan from processing (no record)")
 			return
 		}
-		log.Printf("Reaper: error loading task %s: %v", taskID, err)
+		taskLog.Error("reaper: error loading task", "error", err)
 		return
 	}
 
@@ -202,21 +217,22 @@ func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
 		taskID,
 	).Text()
 	if err != nil {
-		log.Printf("Reaper: reclaim script error for %s: %v", taskID, err)
+		taskLog.Error("reaper: reclaim script error", "error", err)
 		return
 	}
 
 	switch result {
 	case "reclaimed":
-		log.Printf("Reaper: reclaimed task %s (retries now %d/%d)", taskID, task.Retries+1, task.MaxRetries)
+		taskLog.Info("reaper: reclaimed task", "retries", task.Retries+1, "max_retries", task.MaxRetries)
 		r.emitEvent(ctx, taskID, "reclaimed",
 			fmt.Sprintf("Lease expired, reclaimed (attempt %d/%d)", task.Retries+2, task.MaxRetries+1))
+		r.telemetry.IncReaperReclaims()
 		if r.metrics != nil {
 			r.metrics.IncrRetries(ctx)
 		}
 
 	case "dead_lettered":
-		log.Printf("Reaper: dead-lettered task %s (retries exhausted)", taskID)
+		taskLog.Info("reaper: dead-lettered task (retries exhausted)")
 		// The Lua script already marked status=failed in the hash. Build the DLQ
 		// entry from the record we already loaded (patching status) rather than
 		// re-reading — a failed reload must not cause us to silently drop the task
@@ -228,10 +244,11 @@ func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
 			Reason:   "lease expired, retries exhausted (reclaimed by reaper)",
 		}
 		if err := r.deadLetter.Push(ctx, ft); err != nil {
-			log.Printf("Reaper: error pushing %s to DLQ: %v", taskID, err)
+			taskLog.Error("reaper: error pushing to DLQ", "error", err)
 		}
 		r.emitEvent(ctx, taskID, "dead_lettered",
 			fmt.Sprintf("Lease expired, retries exhausted (%d/%d)", task.MaxRetries, task.MaxRetries))
+		r.telemetry.IncReaperReclaims()
 		if r.metrics != nil {
 			r.metrics.IncrFailed(ctx)
 		}
@@ -239,11 +256,11 @@ func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
 	case "orphan":
 		// Record vanished (flushed) after we claimed it; already removed from
 		// processing by the script. Nothing else to do.
-		log.Printf("Reaper: task %s had no record (orphan), removed from processing", taskID)
+		taskLog.Warn("reaper: task had no record (orphan), removed from processing")
 
 	case "lost_race":
 		// Another reaper instance or the worker already handled it — expected.
-		log.Printf("Reaper: lost race for task %s (already handled)", taskID)
+		taskLog.Debug("reaper: lost race for task (already handled)")
 	}
 }
 
@@ -260,6 +277,6 @@ func (r *Reaper) emitEvent(ctx context.Context, taskID, eventType, detail string
 		Timestamp: time.Now(),
 	}
 	if err := r.events.Push(ctx, event); err != nil {
-		log.Printf("Reaper: error pushing event: %v", err)
+		r.logger.Error("reaper: error pushing event", "error", err)
 	}
 }

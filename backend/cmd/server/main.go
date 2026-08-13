@@ -9,10 +9,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/api"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
@@ -21,18 +25,27 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/reaper"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/telemetry"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/worker"
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config error: %v", err)
+		logger.Error("config error", "error", err)
+		os.Exit(1)
 	}
 
 	// Redis
-	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass)
+	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass, logger)
 	defer redisClient.Close()
+
+	// Prometheus metrics registered on a dedicated registry (not the global
+	// default), so the server owns exactly the collectors it exposes on /metrics.
+	registry := prometheus.NewRegistry()
+	metrics := telemetry.New(registry)
 
 	// Stores
 	taskStore := store.NewTaskStore(redisClient)
@@ -43,12 +56,17 @@ func main() {
 	queuePeekStore := store.NewQueuePeekStore(redisClient, taskStore)
 	nodeStore := store.NewNodeStore(redisClient, cfg.HeartbeatTTL)
 
+	// queue_depth is a scrape-time collector reading ZCARD(ready) via the
+	// QueuePeekStore; only the server registers it (workers have no such store).
+	telemetry.RegisterQueueDepth(registry, queuePeekStore)
+
 	// Queue + broker. The server's broker carries its own node identity so that
 	// leases taken by in-process workers are attributed to (and reclaimable from)
 	// this node.
 	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
-	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore)
+	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore, logger)
 	nodeID := worker.NewNodeID()
+	nodeLogger := logger.With("node_id", nodeID)
 	redisBroker := broker.NewRedisBroker(redisClient, taskStore, priorityQueue, delayedScheduler, cfg.VisibilityTimeout, nodeID)
 
 	// Worker pool (always constructed so the API can report ActiveWorkers; only
@@ -63,8 +81,10 @@ func main() {
 		Events:       eventStore,
 		WorkerState:  workerStateStore,
 		DrainTimeout: cfg.DrainTimeout,
+		Logger:       nodeLogger,
+		Telemetry:    metrics,
 	})
-	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore)
+	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore, nodeLogger)
 
 	// API
 	apiHandler := api.NewHandler(api.HandlerDeps{
@@ -79,8 +99,9 @@ func main() {
 		QueuePeek:   queuePeekStore,
 		Tasks:       taskStore,
 		Nodes:       nodeStore,
+		Logger:      logger,
 	})
-	router := api.NewRouter(apiHandler)
+	router := api.NewRouter(apiHandler, logger, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.ServerPort),
@@ -102,6 +123,8 @@ func main() {
 		Interval:        cfg.ReaperInterval,
 		BatchSize:       100,
 		NodeGraceWindow: cfg.NodeGraceWindow,
+		Logger:          logger,
+		Metrics:         metrics,
 	})
 	go taskReaper.Start(ctx)
 
@@ -116,39 +139,41 @@ func main() {
 			Hostname:          worker.Hostname(),
 			Capacity:          cfg.WorkerCount,
 			HeartbeatInterval: cfg.HeartbeatInterval,
+			Logger:            logger,
 		})
 		nodeDone = make(chan struct{})
 		go func() {
 			defer close(nodeDone)
 			node.Run(ctx) // blocks: register -> heartbeat + pool -> drain -> deregister
 		}()
-		log.Printf("In-process worker node enabled (%d workers)", cfg.WorkerCount)
+		logger.Info("in-process worker node enabled", "workers", cfg.WorkerCount)
 	} else {
-		log.Println("RUN_WORKERS=false — server runs API + scheduler + reaper only")
+		logger.Info("RUN_WORKERS=false — server runs API + scheduler + reaper only")
 	}
 
 	// Start HTTP server
 	go func() {
-		log.Printf("Server listening on :%s", cfg.ServerPort)
+		logger.Info("server listening", "port", cfg.ServerPort)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	// Wait for shutdown signal
 	<-ctx.Done()
-	log.Println("Shutdown signal received")
+	logger.Info("shutdown signal received")
 
 	// Shutdown HTTP server with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		logger.Error("HTTP server shutdown error", "error", err)
 	}
 
 	// Wait for the in-process node to drain in-flight work and deregister.
 	if nodeDone != nil {
 		<-nodeDone
 	}
-	log.Println("Shutdown complete")
+	logger.Info("shutdown complete")
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -23,15 +23,20 @@ type DelayedScheduler struct {
 	queue      *PriorityQueue
 	tasks      *store.TaskStore
 	events     *store.EventStore
+	logger     *slog.Logger
 	promoteCmd *redis.Script
 }
 
-func NewDelayedScheduler(client *redis.Client, queue *PriorityQueue, tasks *store.TaskStore, events *store.EventStore) *DelayedScheduler {
+func NewDelayedScheduler(client *redis.Client, queue *PriorityQueue, tasks *store.TaskStore, events *store.EventStore, logger *slog.Logger) *DelayedScheduler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &DelayedScheduler{
 		client:     client,
 		queue:      queue,
 		tasks:      tasks,
 		events:     events,
+		logger:     logger,
 		promoteCmd: redis.NewScript(promoteScript),
 	}
 }
@@ -55,7 +60,7 @@ func (d *DelayedScheduler) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Delayed scheduler stopped")
+			d.logger.Info("delayed scheduler stopped")
 			return
 		case <-ticker.C:
 			d.promoteDueTasks(ctx)
@@ -72,12 +77,12 @@ func (d *DelayedScheduler) promoteDueTasks(ctx context.Context) {
 		now, batchSize,
 	).Int64()
 	if err != nil && err != redis.Nil {
-		log.Printf("Error promoting delayed tasks: %v", err)
+		d.logger.Error("error promoting delayed tasks", "error", err)
 		return
 	}
 
 	if promoted > 0 {
-		log.Printf("Promoted %d delayed task(s) to ready queue", promoted)
+		d.logger.Info("promoted delayed tasks to ready queue", "count", promoted)
 		// Emit events for promoted tasks. Since the Lua script handles the batch
 		// atomically, we emit a summary event rather than per-task events to avoid
 		// needing the ID list returned from Lua (keeping the script simple).

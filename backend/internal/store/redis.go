@@ -2,8 +2,8 @@ package store
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -36,7 +36,10 @@ func NodeMetaKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":m
 // reclaim-once plus the prune grace window.
 func NodeDeadKey(nodeID string) string { return "taskqueue:node:" + nodeID + ":dead" }
 
-func NewRedisClient(addr, password string) *redis.Client {
+func NewRedisClient(addr, password string, logger *slog.Logger) *redis.Client {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
@@ -45,8 +48,9 @@ func NewRedisClient(addr, password string) *redis.Client {
 
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
-		log.Fatalf("failed to connect to redis at %s: %v", addr, err)
+		logger.Error("failed to connect to redis", "addr", addr, "error", err)
+		os.Exit(1)
 	}
-	fmt.Printf("Connected to Redis at %s\n", addr)
+	logger.Info("connected to Redis", "addr", addr)
 	return client
 }

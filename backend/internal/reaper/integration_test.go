@@ -40,7 +40,7 @@ func TestIntegration_NodeDeath_TasksReassigned(t *testing.T) {
 	metrics := store.NewMetricsStore(client)
 	nodes := store.NewNodeStore(client, 10*time.Second)
 	pq := queue.NewPriorityQueue(client, tasks)
-	delayed := queue.NewDelayedScheduler(client, pq, tasks, events)
+	delayed := queue.NewDelayedScheduler(client, pq, tasks, events, nil)
 
 	// Two nodes sharing the same Redis, each with its own broker identity.
 	brokerA := broker.NewRedisBroker(client, tasks, pq, delayed, 30*time.Second, "node-A")

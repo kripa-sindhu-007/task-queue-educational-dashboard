@@ -13,7 +13,7 @@ func TestPromoteDueTasks(t *testing.T) {
 	ctx := context.Background()
 	tasks, q := newTestDeps(t)
 	// Reuse the same client as the queue for the delayed scheduler.
-	sched := NewDelayedScheduler(q.client, q, tasks, nil)
+	sched := NewDelayedScheduler(q.client, q, tasks, nil, nil)
 
 	due := model.Task{ID: "due", Priority: 2, Status: model.StatusPending}
 	future := model.Task{ID: "future", Priority: 2, Status: model.StatusPending}

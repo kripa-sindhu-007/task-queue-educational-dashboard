@@ -3,7 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
@@ -19,6 +19,7 @@ type NodeConfig struct {
 	Hostname          string
 	Capacity          int           // executor goroutines (== pool worker count)
 	HeartbeatInterval time.Duration // how often to refresh the heartbeat key
+	Logger            *slog.Logger  // optional: nil falls back to slog.Default()
 }
 
 // Node represents this process's membership in the cluster: it registers itself,
@@ -26,11 +27,16 @@ type NodeConfig struct {
 // deregisters on graceful shutdown. If the process dies without deregistering,
 // the heartbeat key expires and the reaper reclaims this node's in-flight work.
 type Node struct {
-	cfg NodeConfig
+	cfg    NodeConfig
+	logger *slog.Logger
 }
 
 func NewNode(cfg NodeConfig) *Node {
-	return &Node{cfg: cfg}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Node{cfg: cfg, logger: logger.With("node_id", cfg.NodeID)}
 }
 
 // Run registers the node, starts the heartbeat loop and worker pool, and blocks
@@ -44,9 +50,9 @@ func (n *Node) Run(ctx context.Context) {
 	}
 
 	if err := n.cfg.Nodes.Register(ctx, node); err != nil {
-		log.Printf("Node %s: registration failed: %v", n.cfg.NodeID, err)
+		n.logger.Error("node registration failed", "error", err)
 	} else {
-		log.Printf("Node %s registered (host=%s, capacity=%d)", n.cfg.NodeID, n.cfg.Hostname, n.cfg.Capacity)
+		n.logger.Info("node registered", "host", n.cfg.Hostname, "capacity", n.cfg.Capacity)
 		if n.cfg.Events != nil {
 			n.cfg.Events.Push(ctx, model.TaskEvent{
 				ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
@@ -78,9 +84,9 @@ func (n *Node) Run(ctx context.Context) {
 	deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := n.cfg.Nodes.Deregister(deregCtx, n.cfg.NodeID); err != nil {
-		log.Printf("Node %s: deregister failed: %v", n.cfg.NodeID, err)
+		n.logger.Error("node deregister failed", "error", err)
 	} else {
-		log.Printf("Node %s deregistered", n.cfg.NodeID)
+		n.logger.Info("node deregistered")
 	}
 }
 
@@ -93,7 +99,7 @@ func (n *Node) heartbeatLoop(ctx context.Context, node model.Node) {
 			return
 		case <-ticker.C:
 			if err := n.cfg.Nodes.Heartbeat(ctx, node); err != nil {
-				log.Printf("Node %s: heartbeat error: %v", n.cfg.NodeID, err)
+				n.logger.Error("node heartbeat error", "error", err)
 			}
 		}
 	}

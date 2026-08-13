@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +19,7 @@ type Pool struct {
 	activeCount  atomic.Int64
 	wg           sync.WaitGroup
 	workerState  *store.WorkerStateStore
+	logger       *slog.Logger
 }
 
 func NewPool(
@@ -27,13 +28,18 @@ func NewPool(
 	workerCount int,
 	pollInterval time.Duration,
 	workerState *store.WorkerStateStore,
+	logger *slog.Logger,
 ) *Pool {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Pool{
 		broker:       b,
 		executor:     executor,
 		workerCount:  workerCount,
 		pollInterval: pollInterval,
 		workerState:  workerState,
+		logger:       logger,
 	}
 }
 
@@ -48,13 +54,13 @@ func (p *Pool) Start(ctx context.Context) {
 		}
 		go p.worker(ctx, i)
 	}
-	log.Printf("Started %d workers (poll interval: %v)", p.workerCount, p.pollInterval)
+	p.logger.Info("started workers", "count", p.workerCount, "poll_interval", p.pollInterval)
 }
 
 // Wait blocks until all workers have finished.
 func (p *Pool) Wait() {
 	p.wg.Wait()
-	log.Println("All workers stopped")
+	p.logger.Info("all workers stopped")
 }
 
 // ActiveWorkers returns the current number of workers executing a task.
@@ -64,12 +70,13 @@ func (p *Pool) ActiveWorkers() int64 {
 
 func (p *Pool) worker(ctx context.Context, id int) {
 	defer p.wg.Done()
-	log.Printf("Worker %d started", id)
+	logger := p.logger.With("worker", id)
+	logger.Info("worker started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Worker %d shutting down", id)
+			logger.Info("worker shutting down")
 			return
 		default:
 		}
@@ -79,7 +86,7 @@ func (p *Pool) worker(ctx context.Context, id int) {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("Worker %d dequeue error: %v", id, err)
+			logger.Error("worker dequeue error", "error", err)
 			time.Sleep(p.pollInterval)
 			continue
 		}

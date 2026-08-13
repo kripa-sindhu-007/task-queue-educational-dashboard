@@ -8,9 +8,10 @@ import (
 )
 
 type Config struct {
-	RedisAddr  string
-	RedisPass  string
-	ServerPort string
+	RedisAddr   string
+	RedisPass   string
+	ServerPort  string
+	MetricsPort string // port the standalone worker serves /metrics on (server uses ServerPort)
 
 	WorkerCount  int
 	PollInterval time.Duration // how long a worker sleeps when the ready queue is empty
@@ -36,9 +37,10 @@ type Config struct {
 // the result. It returns an error rather than panicking so main can decide.
 func Load() (*Config, error) {
 	cfg := &Config{
-		RedisAddr:  getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPass:  getEnv("REDIS_PASSWORD", ""),
-		ServerPort: getEnv("SERVER_PORT", "8080"),
+		RedisAddr:   getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPass:   getEnv("REDIS_PASSWORD", ""),
+		ServerPort:  getEnv("SERVER_PORT", "8080"),
+		MetricsPort: getEnv("METRICS_PORT", "9100"),
 
 		WorkerCount:  getEnvInt("WORKER_COUNT", 5),
 		PollInterval: getEnvMillis("POLL_INTERVAL_MS", 500),
@@ -69,6 +71,9 @@ func (c *Config) validate() error {
 	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("config: SERVER_PORT must not be empty")
+	}
+	if c.MetricsPort == "" {
+		return fmt.Errorf("config: METRICS_PORT must not be empty")
 	}
 	if c.WorkerCount <= 0 {
 		return fmt.Errorf("config: WORKER_COUNT must be > 0, got %d", c.WorkerCount)

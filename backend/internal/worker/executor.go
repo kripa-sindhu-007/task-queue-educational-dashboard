@@ -3,7 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"time"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/telemetry"
 )
 
 // DefaultDrainTimeout bounds how long post-work Redis writes may take once the
@@ -30,10 +31,16 @@ type ExecutorDeps struct {
 	Events       *store.EventStore
 	WorkerState  *store.WorkerStateStore
 	DrainTimeout time.Duration
+	// Logger is the base logger; Execute derives a per-task child keyed by
+	// task_id. Nil falls back to slog.Default(). Telemetry is the Prometheus
+	// collector set; a nil *telemetry.Metrics no-ops.
+	Logger    *slog.Logger
+	Telemetry *telemetry.Metrics
 }
 
 type Executor struct {
-	deps ExecutorDeps
+	deps   ExecutorDeps
+	logger *slog.Logger
 }
 
 func NewExecutor(deps ExecutorDeps) *Executor {
@@ -43,7 +50,11 @@ func NewExecutor(deps ExecutorDeps) *Executor {
 	if deps.Handlers == nil {
 		deps.Handlers = handler.NewDefaultRegistry()
 	}
-	return &Executor{deps: deps}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Executor{deps: deps, logger: logger}
 }
 
 // BackoffDelay returns the retry delay for a given (post-increment) retry count:
@@ -66,8 +77,17 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.deps.DrainTimeout)
 	defer cancel()
 
-	log.Printf("Executing task %s (priority=%d, attempt=%d/%d)",
-		task.ID, task.Priority, task.Retries+1, task.MaxRetries+1)
+	logger := e.logger.With("task_id", task.ID)
+
+	logger.Info("executing task",
+		"priority", task.Priority, "attempt", task.Retries+1, "max_attempts", task.MaxRetries+1)
+
+	// enqueue_to_start: measured from CreatedAt (submission time), the closest
+	// signal on model.Task. This slightly overcounts for delayed/retried tasks
+	// (their CreatedAt predates the delay/backoff window they waited through) —
+	// acceptable for the zero-delay loadgen workload; a precise ready_at would
+	// need Lua changes we deliberately deferred.
+	e.deps.Telemetry.ObserveEnqueueToStart(time.Since(task.CreatedAt))
 
 	// Mark worker as processing (task record status already set by dequeue Lua script).
 	if e.deps.WorkerState != nil {
@@ -86,10 +106,11 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 	start := time.Now()
 	result, workErr := e.deps.Handlers.Dispatch(ctx, *task)
 	elapsed := time.Since(start)
+	e.deps.Telemetry.ObserveTaskDuration(task.Type, elapsed)
 
 	if workErr != nil {
 		errMsg := workErr.Error()
-		log.Printf("Task %s failed: %s", task.ID, errMsg)
+		logger.Warn("task failed", "error", errMsg)
 		task.Error = errMsg
 		e.emitEvent(ctx, task.ID, "failed", workerID, errMsg)
 
@@ -97,22 +118,22 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 		// skip retry routing — the task will be re-delivered automatically.
 		if err := e.deps.Broker.Nack(ctx, task.ID, true); err != nil {
 			if err == broker.ErrLeaseNotHeld {
-				log.Printf("Task %s: lease already reclaimed by reaper, skipping retry routing", task.ID)
+				logger.Warn("lease already reclaimed by reaper, skipping retry routing")
 			} else {
-				log.Printf("Task %s: nack error: %v", task.ID, err)
+				logger.Error("nack error", "error", err)
 			}
 			// Either way, don't do retry routing — we don't own the task.
 		} else {
 			// We successfully released the lease — handle retry/DLQ routing.
-			e.handleFailure(ctx, task, workerID)
+			e.handleFailure(ctx, logger, task, workerID)
 		}
 	} else {
 		// Success path: Ack releases the lease and atomically marks completed.
 		if err := e.deps.Broker.Ack(ctx, task.ID); err != nil {
 			if err == broker.ErrLeaseNotHeld {
-				log.Printf("Task %s: lease already reclaimed by reaper (completed work will be redone)", task.ID)
+				logger.Warn("lease already reclaimed by reaper (completed work will be redone)")
 			} else {
-				log.Printf("Task %s: ack error: %v", task.ID, err)
+				logger.Error("ack error", "error", err)
 			}
 			// Don't record completion — we lost the lease race.
 		} else {
@@ -122,10 +143,11 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 			if result.Detail != "" {
 				detail = fmt.Sprintf("%s (%s)", detail, result.Detail)
 			}
-			log.Printf("Task %s completed successfully", task.ID)
+			logger.Info("task completed successfully", "duration", elapsed.Round(time.Millisecond))
 			e.emitEvent(ctx, task.ID, "completed", workerID, detail)
+			e.deps.Telemetry.IncTasksProcessed(task.Type, "completed")
 			if err := e.deps.Metrics.IncrProcessed(ctx); err != nil {
-				log.Printf("Error incrementing processed metric: %v", err)
+				logger.Error("error incrementing processed metric", "error", err)
 			}
 		}
 	}
@@ -139,40 +161,40 @@ func (e *Executor) Execute(task *model.Task, workerID int) {
 	}
 }
 
-func (e *Executor) handleFailure(ctx context.Context, task *model.Task, workerID int) {
+func (e *Executor) handleFailure(ctx context.Context, logger *slog.Logger, task *model.Task, workerID int) {
 	if task.Retries < task.MaxRetries {
 		// Retry with exponential backoff.
 		task.Retries++
 		task.Status = model.StatusPending
 		delay := BackoffDelay(task.Retries)
 
-		log.Printf("Retrying task %s in %v (attempt %d/%d)",
-			task.ID, delay, task.Retries+1, task.MaxRetries+1)
+		logger.Info("retrying task", "delay", delay, "attempt", task.Retries+1, "max_attempts", task.MaxRetries+1)
 
 		e.emitEvent(ctx, task.ID, "retrying", workerID,
 			fmt.Sprintf("Retry %d/%d in %v", task.Retries, task.MaxRetries, delay))
 
 		if err := e.deps.Tasks.Save(ctx, *task); err != nil {
-			log.Printf("Error saving retry state for %s: %v", task.ID, err)
+			logger.Error("error saving retry state", "error", err)
 		}
+		e.deps.Telemetry.IncTasksProcessed(task.Type, "retried")
 		if err := e.deps.Metrics.IncrRetries(ctx); err != nil {
-			log.Printf("Error incrementing retries metric: %v", err)
+			logger.Error("error incrementing retries metric", "error", err)
 		}
 		if err := e.deps.Delayed.Schedule(ctx, *task, delay); err != nil {
-			log.Printf("Error scheduling retry for task %s: %v", task.ID, err)
+			logger.Error("error scheduling retry", "error", err)
 		}
 		return
 	}
 
 	// Exhausted retries — dead-letter.
 	task.Status = model.StatusFailed
-	log.Printf("Task %s exhausted retries, moving to dead-letter", task.ID)
+	logger.Warn("task exhausted retries, moving to dead-letter", "max_retries", task.MaxRetries)
 
 	e.emitEvent(ctx, task.ID, "dead_lettered", workerID,
 		fmt.Sprintf("Exhausted %d retries", task.MaxRetries))
 
 	if err := e.deps.Tasks.Save(ctx, *task); err != nil {
-		log.Printf("Error saving dead-letter state for %s: %v", task.ID, err)
+		logger.Error("error saving dead-letter state", "error", err)
 	}
 	ft := model.FailedTask{
 		Task:     *task,
@@ -180,10 +202,11 @@ func (e *Executor) handleFailure(ctx context.Context, task *model.Task, workerID
 		Reason:   task.Error,
 	}
 	if err := e.deps.DeadLetter.Push(ctx, ft); err != nil {
-		log.Printf("Error pushing to dead-letter: %v", err)
+		logger.Error("error pushing to dead-letter", "error", err)
 	}
+	e.deps.Telemetry.IncTasksProcessed(task.Type, "failed")
 	if err := e.deps.Metrics.IncrFailed(ctx); err != nil {
-		log.Printf("Error incrementing failed metric: %v", err)
+		logger.Error("error incrementing failed metric", "error", err)
 	}
 }
 
@@ -197,6 +220,6 @@ func (e *Executor) emitEvent(ctx context.Context, taskID, eventType string, work
 		Timestamp: time.Now(),
 	}
 	if err := e.deps.Events.Push(ctx, event); err != nil {
-		log.Printf("Error pushing event: %v", err)
+		e.logger.Error("error pushing event", "task_id", taskID, "error", err)
 	}
 }

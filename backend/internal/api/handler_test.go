@@ -28,7 +28,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.TaskStore, *queue.Priorit
 
 	tasks := store.NewTaskStore(client)
 	q := queue.NewPriorityQueue(client, tasks)
-	delayed := queue.NewDelayedScheduler(client, q, tasks, store.NewEventStore(client))
+	delayed := queue.NewDelayedScheduler(client, q, tasks, store.NewEventStore(client), nil)
 
 	h := NewHandler(HandlerDeps{
 		Queue:   q,
@@ -38,7 +38,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.TaskStore, *queue.Priorit
 		Tasks:   tasks,
 		Redis:   client,
 	})
-	return NewRouter(h), tasks, q
+	return NewRouter(h, nil, nil), tasks, q
 }
 
 func submit(t *testing.T, srv http.Handler, body string) model.Task {
@@ -122,7 +122,7 @@ func TestGetNodes(t *testing.T) {
 		Redis: client,
 		Nodes: nodes,
 	})
-	srv := NewRouter(h)
+	srv := NewRouter(h, nil, nil)
 
 	// Empty cluster → [].
 	rec := httptest.NewRecorder()

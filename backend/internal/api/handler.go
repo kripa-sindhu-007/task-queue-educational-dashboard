@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -31,14 +32,20 @@ type HandlerDeps struct {
 	QueuePeek   *store.QueuePeekStore
 	Tasks       *store.TaskStore
 	Nodes       *store.NodeStore
+	Logger      *slog.Logger // nil falls back to slog.Default()
 }
 
 type Handler struct {
-	deps HandlerDeps
+	deps   HandlerDeps
+	logger *slog.Logger
 }
 
 func NewHandler(deps HandlerDeps) *Handler {
-	return &Handler{deps: deps}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Handler{deps: deps, logger: logger}
 }
 
 type submitRequest struct {

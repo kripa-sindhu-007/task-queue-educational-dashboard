@@ -17,11 +17,11 @@
 
 | Field | Value |
 |---|---|
-| **Current phase** | Phase 3 — Observability & Performance (ready to start; Phase 2 ✅ complete) |
-| **Current task** | P3.1 (not started) |
-| **Last updated** | 2026-07-11 |
-| **Last session** | 2026-07-11 — Phase 2 deferred items done (API /nodes, node panel, compose split, integration test, docs) |
-| **Hours spent / budget** | ~26 / ~100 |
+| **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) ✅ done; P3.3–P3.8 todo. |
+| **Current task** | P3.3 (Prometheus + Grafana in compose) — next. `/metrics` now exposed on server `:8080` and workers `:9100`. |
+| **Last updated** | 2026-08-13 |
+| **Last session** | 2026-08-13 — P3.1 structured logging (injected slog JSON, no globals) + P3.2 Prometheus metrics (new `internal/telemetry/`, 5 metrics). Verified live vs a real Redis (metrics scrape + JSON logs) and via a `golang:1.25-alpine` Docker build; 53 tests green. |
+| **Hours spent / budget** | ~37 / ~100 |
 | **Blockers** | none |
 
 ---
@@ -152,8 +152,8 @@ cluster; the broker detects dead nodes and reclaims their work.
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| P3.1 | ☐ Replace all `log.Printf` with `log/slog` JSON, keyed by `task_id`/`node_id`; logger injected, not global | todo | |
-| P3.2 | ☐ Prometheus `/metrics` on broker AND workers: `tasks_processed_total{type,status}`, `task_duration_seconds` histogram, `queue_depth`, `enqueue_to_start_seconds` histogram, `reaper_reclaims_total` | todo | New `internal/telemetry/` |
+| P3.1 | ☑ Replace all `log.Printf` with `log/slog` JSON, keyed by `task_id`/`node_id`; logger injected, not global | done | Root JSON logger built in both `main`s, threaded through the Phase-0 Deps seams (`ExecutorDeps`, `reaper.Config`, `NodeConfig`, `HandlerDeps`, `NewRouter`); every constructor falls back to `slog.Default()` when nil, so existing tests were untouched. `rg '"log"' cmd internal` empty |
+| P3.2 | ☑ Prometheus `/metrics` on broker AND workers: `tasks_processed_total{type,status}`, `task_duration_seconds` histogram, `queue_depth`, `enqueue_to_start_seconds` histogram, `reaper_reclaims_total` | done | New `internal/telemetry/` on a dedicated (non-global) registry; `queue_depth` is a scrape-time collector via `QueuePeekStore`. Server serves `/metrics` on `:8080`; worker got a minimal HTTP server on `METRICS_PORT` (default `:9100`). `enqueue_to_start_seconds` sourced from `Task.CreatedAt` (overcounts delayed/retried — precise `ReadyAt` deferred). Verified live |
 | P3.3 | ☐ Prometheus + Grafana in compose; ONE committed dashboard JSON in `deploy/grafana/` | todo | Timebox Grafana to one good dashboard |
 | P3.4 | ☐ Replace worker sleep-polling with blocking `BZPOPMIN` (timeout = shutdown-check interval); measure & record the latency improvement | todo | Needs care with the Lua lease script — see Decision Log |
 | P3.5 | ☐ `cmd/loadgen`: configurable rate, duration, task-type mix | todo | Hand-rolled, no k6 |
@@ -220,6 +220,9 @@ cluster; the broker detects dead nodes and reclaims their work.
 | 2026-07-11 | Ack/Nack gained owner-equality fencing (verify `owner==thisNode` before releasing) | Prevents a stalled worker whose lease was reclaimed + re-leased elsewhere from clobbering the new owner. Monotonic fencing tokens remain P4 |
 | 2026-07-11 | In-process workers kept behind `RUN_WORKERS` (default true) rather than removed from `cmd/server` | Keeps the current single-container `docker compose up` working until P2.5 splits the compose file; distributed mode sets `RUN_WORKERS=false` |
 | 2026-07-11 | Legacy per-goroutine `WorkerState` hash made optional (nil in `cmd/worker`) | Cross-process int worker IDs would collide; the node registry is the Phase 2 source of truth for "what's running" |
+| 2026-08-13 | Toolchain bumped **Go 1.22 → 1.25** (go.mod, CI `go-version`, `backend/Dockerfile`) | `prometheus/client_golang v1.24.1` (P3.2's one new dep) declares `go 1.25.0`; keeping the latest security-patched metrics client was preferred over pinning an older client_golang to stay on 1.22 |
+| 2026-08-13 | P3.2 telemetry on a **dedicated** `prometheus.Registry`, not the global default; every constructor's injected logger/telemetry is **nil-tolerant** | Dedicated registry avoids duplicate-registration panics across tests; nil-tolerance let the ~40 existing tests compile without threading a logger/telemetry (same pattern as `WorkerState`/`Events`) |
+| 2026-08-13 | `enqueue_to_start_seconds` sourced from `Task.CreatedAt`, not a new `ReadyAt` field | Zero schema/Lua change; exact for the zero-delay loadgen workload P3 targets. A precise `ReadyAt` (needs `promote.lua`/`reclaim.lua` edits) is deferred until a task needs sub-second accuracy for delayed/retried tasks |
 
 ---
 
@@ -246,6 +249,10 @@ cluster; the broker detects dead nodes and reclaims their work.
 - OpenTelemetry tracing spans per task lifecycle
 - SSE/WebSocket dashboard push (replace polling)
 
+**DevOps / CD (planned — deploy automation):**
+- **Auto-deploy backend + frontend on publish (CD).** Today CI publishes images to Docker Hub but nothing deploys them. Add a `deploy` job (`needs: publish`, main-push only). Recommended target: a single always-on Docker VM running `docker-compose.prod.yml` (`image:`-only, no `build:`) via SSH — mirrors local compose, keeps `--scale worker=4` + the kill-node demo. Prereqs: (1) provision VM + dedicated deploy user + open 3000/8080, keep 6379 internal; (2) GitHub secrets DEPLOY_HOST/USER/SSH_KEY + PUBLIC_API_URL; (3) **fix `NEXT_PUBLIC_API_URL`** — it's baked at build to `localhost:8080`, must be the public backend URL (build-arg or runtime config); (4) **gate `DELETE /api/flush` behind `DEV_MODE`** BEFORE any public deploy (open flush = anyone wipes the queue). Alt targets: self-hosted runner (free, local-only), PaaS (awkward for the scaled-worker/kill-node demo).
+- CI polish (P2/P3): buildx GHA layer caching, `docker/build-push-action`, per-image `paths-filter`, Trivy image scan, Dependabot (actions/npm/gomod), `next lint`/eslint, fix image `source` OCI label (points at `weekend_project_1`).
+
 ---
 
 ## 📓 Session Log
@@ -263,6 +270,19 @@ cluster; the broker detects dead nodes and reclaims their work.
 ```
 
 ---
+
+### 2026-08-13 — Phase 3 P3.1 (slog) + P3.2 (Prometheus) (~3h)
+- **Done:** P3.1 structured logging — one root JSON `slog.Logger` per binary, injected through the Phase-0 Deps seams (`store.NewRedisClient`, `ExecutorDeps`, `reaper.Config`, `worker.NodeConfig`/`Pool`, `DelayedScheduler`, `api.HandlerDeps`/`NewRouter`/middleware); child loggers key `task_id` (executor/reaper) and `node_id` (node/pool); every constructor falls back to `slog.Default()` when nil so existing tests were untouched; all `log.Printf/Println/Fatalf` gone (`rg '"log"' cmd internal` empty). P3.2 Prometheus — new `internal/telemetry/` on a dedicated registry with `tasks_processed_total{type,status}`, `task_duration_seconds{type}`, `enqueue_to_start_seconds`, `reaper_reclaims_total`, and a scrape-time `queue_depth` collector reading `ZCARD` via `QueuePeekStore.ReadySize`; wired at the executor (ack/nack) and reaper (reclaim); `/metrics` on the server `:8080` router + a new minimal HTTP server on the worker's `METRICS_PORT` (default `:9100`). One new dep `prometheus/client_golang v1.24.1`, which forced the Go 1.22→1.25 toolchain bump (see Decision Log; CI + Dockerfile updated to match).
+- **Verified:** 53 tests (`go test ./... -race`, was 41) + `vet`/`gofmt` clean. **Live** (real Redis via Docker, ports retargeted around the running stack): `/metrics` scrape showed `tasks_processed_total{status="completed",type="hash"} 3`, `task_duration_seconds_count 3`, `enqueue_to_start_seconds_count 3`, `queue_depth 0`; JSON logs carried `task_id`+`node_id`; worker `/metrics` returned 200. Backend Docker image builds clean on `golang:1.25-alpine`.
+- **Learned/decided:** `*Vec` metrics emit nothing until first labeled observation (expected). Dedicated registry + nil-tolerant injection avoid test churn. See Decision Log (2026-08-13).
+- **Next:** P3.3 (Prometheus + Grafana in compose, one dashboard JSON in `deploy/grafana/`), then P3.4 (BZPOPMIN — mind the Lua-lease tension in Known Gotchas) / P3.5 (`cmd/loadgen`).
+- **Blockers:** none.
+
+### 2026-08-12 — Live e2e + demo-bug fixes + CI quality gate + CD planning (~8h)
+- **Done:** First live e2e of the whole dashboard vs the real 4-worker Docker cluster (was mock-only). Closed the Phase-1 zero-loss criterion via the distributed variant: `docker kill` a worker mid-burst → reaper reclaimed its leases → survivors finished, `submitted == completed + dead_lettered` exactly. Fixed 2 bugs only the live run surfaced: (1) `active_workers` was structurally 0 in distributed mode (read the backend in-process pool under `RUN_WORKERS=false`) → now `ZCARD(processing)`; (2) kill-node recovery was invisible → dead-node `:meta`/`:dead` retention + 30s `DEAD_NODE_GRACE_MS` tombstone, a retained `taskqueue:events:cluster` list + `GET /api/events/cluster` + an Activity Log All|Cluster toggle. Shipped as PR #8. Then added a CI quality gate: `.github/workflows/ci.yml` (backend gofmt/vet/`test -race`, frontend `tsc`/`build`) gating a consolidated `publish` job; `main` branch protection now REQUIRES `backend-test` + `frontend-test` (strict). Backend Dockerfile got a cached `go mod download` dep layer (dropped `go mod tidy`).
+- **Learned/decided:** `main` was pre-revamp; all frontend work must branch off `feature/frontend-revamp` until it merges (it since merged to main). CI must stay green: fixed 5 files that weren't gofmt-clean. Auto-deploy (CD) is the next DevOps item — see Backlog; a single Docker VM is the recommended target for this distributed/kill-node demo. Two hard prereqs before public deploy: fix the build-time `NEXT_PUBLIC_API_URL`, and gate `/api/flush` behind `DEV_MODE`.
+- **Next:** merge the CI-hardening PR; then either backend Phase 3 (observability) or implement CD once a host exists.
+- **Blockers:** none.
 
 ### 2026-07-11 — Phase 2 deferred items: API, dashboard, compose, integration (~4h)
 

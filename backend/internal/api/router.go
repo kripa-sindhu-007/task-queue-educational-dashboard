@@ -1,8 +1,18 @@
 package api
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
+)
 
-func NewRouter(h *Handler) http.Handler {
+// NewRouter builds the API mux. logger drives the request/panic middleware (nil
+// falls back to slog.Default()). metrics, when non-nil, is mounted at GET
+// /metrics for Prometheus to scrape (outside the /api prefix, per convention);
+// pass nil to omit it (e.g. in tests).
+func NewRouter(h *Handler, logger *slog.Logger, metrics http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/tasks", h.SubmitTask)
@@ -19,10 +29,14 @@ func NewRouter(h *Handler) http.Handler {
 	mux.HandleFunc("GET /api/metrics/enhanced", h.GetEnhancedMetrics)
 	mux.HandleFunc("DELETE /api/flush", h.FlushData)
 
+	if metrics != nil {
+		mux.Handle("GET /metrics", metrics)
+	}
+
 	var handler http.Handler = mux
 	handler = CORS(handler)
-	handler = Logging(handler)
-	handler = Recovery(handler)
+	handler = Logging(handler, logger)
+	handler = Recovery(handler, logger)
 
 	return handler
 }

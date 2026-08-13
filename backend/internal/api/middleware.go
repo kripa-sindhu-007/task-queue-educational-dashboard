@@ -1,7 +1,7 @@
 package api
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -22,21 +22,22 @@ func CORS(next http.Handler) http.Handler {
 }
 
 // Logging logs each request with method, path, status, and duration.
-func Logging(next http.Handler) http.Handler {
+func Logging(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		log.Printf("%s %s %d %v", r.Method, r.URL.Path, sw.status, time.Since(start))
+		logger.Info("request",
+			"method", r.Method, "path", r.URL.Path, "status", sw.status, "duration", time.Since(start))
 	})
 }
 
 // Recovery catches panics and returns 500.
-func Recovery(next http.Handler) http.Handler {
+func Recovery(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("PANIC: %v", err)
+				logger.Error("panic recovered", "error", err, "method", r.Method, "path", r.URL.Path)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()

@@ -59,6 +59,11 @@ func (q *QueuePeekStore) PeekDelayed(ctx context.Context, limit int64) ([]model.
 	return entries, nil
 }
 
+// ReadySize returns the number of tasks in the ready set (the queue depth).
+func (q *QueuePeekStore) ReadySize(ctx context.Context) (int64, error) {
+	return q.client.ZCard(ctx, KeyReady).Result()
+}
+
 // DelayedSize returns the number of tasks in the delayed set.
 func (q *QueuePeekStore) DelayedSize(ctx context.Context) (int64, error) {
 	return q.client.ZCard(ctx, KeyDelayed).Result()

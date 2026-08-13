@@ -7,11 +7,14 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/reaper"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/telemetry"
 )
 
 func setup(t *testing.T) (*redis.Client, *store.TaskStore, *store.DeadLetterStore, *store.EventStore, *store.MetricsStore) {
@@ -89,6 +92,63 @@ func TestReaper_ReclaimsExpiredLease(t *testing.T) {
 	if status != "pending" {
 		t.Fatalf("expected status=pending, got %s", status)
 	}
+}
+
+// TestReaper_IncrementsReclaimMetric covers P3.2c: each reclaimed lease bumps
+// reaper_reclaims_total on the injected telemetry registry.
+func TestReaper_IncrementsReclaimMetric(t *testing.T) {
+	client, tasks, dl, events, metrics := setup(t)
+	ctx := context.Background()
+
+	reg := prometheus.NewRegistry()
+	tel := telemetry.New(reg)
+
+	task := model.Task{
+		ID:         "task-metric",
+		Type:       "test",
+		Priority:   5,
+		MaxRetries: 3,
+		Retries:    0,
+		Status:     model.StatusProcessing,
+		CreatedAt:  time.Now(),
+	}
+	simulateLeasedTask(ctx, t, client, tasks, task, time.Now().Add(-10*time.Second).UnixMilli())
+
+	r := reaper.New(client, tasks, dl, events, metrics, store.NewNodeStore(client, 10*time.Second), reaper.Config{
+		Interval:  50 * time.Millisecond,
+		BatchSize: 10,
+		Metrics:   tel,
+	})
+	reaperCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	r.Start(reaperCtx)
+
+	if got := testutil.CollectAndCount(reg, "reaper_reclaims_total"); got != 1 {
+		t.Fatalf("expected 1 reaper_reclaims_total series, got %d", got)
+	}
+	if got := testutil.ToFloat64(collectReaperReclaims(t, reg)); got != 1 {
+		t.Fatalf("expected reaper_reclaims_total=1, got %v", got)
+	}
+}
+
+// collectReaperReclaims mirrors the gathered reaper_reclaims_total value into a
+// standalone counter so testutil.ToFloat64 can read it (the real collector is
+// unexported inside telemetry.Metrics).
+func collectReaperReclaims(t *testing.T, g prometheus.Gatherer) prometheus.Collector {
+	t.Helper()
+	mfs, err := g.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	c := prometheus.NewCounter(prometheus.CounterOpts{Name: "reaper_reclaims_total_mirror"})
+	for _, mf := range mfs {
+		if mf.GetName() == "reaper_reclaims_total" {
+			for _, m := range mf.GetMetric() {
+				c.Add(m.GetCounter().GetValue())
+			}
+		}
+	}
+	return c
 }
 
 func TestReaper_DeadLettersWhenRetriesExhausted(t *testing.T) {
