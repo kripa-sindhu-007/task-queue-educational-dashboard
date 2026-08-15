@@ -1,4 +1,4 @@
-.PHONY: build test test-integration bench vet fmt tidy run
+.PHONY: build test test-integration bench vet fmt tidy run loadgen
 
 build:
 	go build ./...
@@ -26,3 +26,8 @@ tidy:
 
 run:
 	go run ./cmd/server
+
+# Load generator (P3.5). Pass flags via ARGS, e.g.:
+#   make loadgen ARGS="-ramp 100:2000 -duration 90s"
+loadgen:
+	go run ./cmd/loadgen $(ARGS)

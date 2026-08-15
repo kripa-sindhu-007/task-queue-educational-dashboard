@@ -99,6 +99,22 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # loadgen — on-demand load generator (P3.5). NOT started by `docker compose up`
+  # (guarded by the `loadgen` profile). Run a ramp to drive the Grafana graphs:
+  #   docker compose run --rm loadgen -ramp 100:2000 -duration 90s
+  # Constant background/soak load (detached, infinite):
+  #   docker compose run -d --rm loadgen -rate 500 -duration 0
+  loadgen:
+    image: kripa007/taskqueue-backend:latest
+    build: ./backend
+    entrypoint: ["/loadgen"]
+    environment:
+      - LOADGEN_URL=http://backend:8080
+    profiles: ["loadgen"]
+    depends_on:
+      - backend
+    restart: "no"
+
 volumes:
   redis-data:
   prometheus-data:
