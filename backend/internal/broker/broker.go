@@ -49,6 +49,14 @@ type Broker interface {
 	Nack(ctx context.Context, taskID string, requeue bool) error
 	// ExtendLease pushes back a leased task's visibility deadline.
 	ExtendLease(ctx context.Context, taskID string, extension time.Duration) error
+	// WaitForReady blocks on the ready doorbell for up to timeout (P3.4). It
+	// returns when a producer rings the doorbell (a task may be ready — the caller
+	// should attempt Dequeue) or when the block times out (the fallback-poll
+	// backstop — Dequeue anyway). It carries no task identity: correctness always
+	// comes from the atomic claim in Dequeue, never from the wake-up. A cancelled
+	// context or a real Redis fault is surfaced as an error so the caller can
+	// distinguish shutdown from a genuine failure.
+	WaitForReady(ctx context.Context, timeout time.Duration) error
 }
 
 // RedisBroker is the Redis-backed Broker with lease-based delivery. Each broker
@@ -174,6 +182,15 @@ func (b *RedisBroker) Nack(ctx context.Context, taskID string, requeue bool) err
 		return ErrLeaseNotHeld
 	}
 	return nil
+}
+
+// WaitForReady blocks on the ready doorbell via the priority queue's BLPOP
+// wrapper. The wake-up token is discarded — it only releases the worker to
+// re-run the unchanged atomic claim (Dequeue). A timeout returns nil (the
+// worker polls anyway); a cancelled context or Redis fault is returned.
+func (b *RedisBroker) WaitForReady(ctx context.Context, timeout time.Duration) error {
+	_, err := b.ready.WaitReady(ctx, timeout)
+	return err
 }
 
 // ExtendLease pushes back a leased task's visibility deadline via a single

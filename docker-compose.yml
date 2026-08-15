@@ -24,6 +24,11 @@ services:
       - RUN_WORKERS=false
       - REAPER_INTERVAL_MS=5000
       - HEARTBEAT_TTL_MS=10000
+      # P3.6 backpressure: shed submits with 429 + Retry-After once the ready
+      # queue reaches MAX_QUEUE_DEPTH (0 disables). Tuned high so normal use is
+      # unaffected but a large loadgen ramp trips it.
+      - MAX_QUEUE_DEPTH=20000
+      - RETRY_AFTER_SECONDS=2
     depends_on:
       redis:
         condition: service_healthy
@@ -60,5 +65,62 @@ services:
       - backend
     restart: unless-stopped
 
+  # prometheus scrapes /metrics off the server (:8080) and every worker replica
+  # (:9100, discovered via Docker DNS — see deploy/prometheus/prometheus.yml).
+  # UI on http://localhost:9090.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # grafana with the Prometheus datasource + the committed dashboard auto-provisioned.
+  # UI on http://localhost:3001 (3000 is the app frontend). Anonymous viewer access
+  # is on so the demo dashboard opens with no login; admin login is admin/admin.
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # loadgen — on-demand load generator (P3.5). NOT started by `docker compose up`
+  # (guarded by the `loadgen` profile). Run a ramp to drive the Grafana graphs:
+  #   docker compose run --rm loadgen -ramp 100:2000 -duration 90s
+  # Constant background/soak load (detached, infinite):
+  #   docker compose run -d --rm loadgen -rate 500 -duration 0
+  loadgen:
+    image: kripa007/taskqueue-backend:latest
+    build: ./backend
+    entrypoint: ["/loadgen"]
+    environment:
+      - LOADGEN_URL=http://backend:8080
+    profiles: ["loadgen"]
+    depends_on:
+      - backend
+    restart: "no"
+
 volumes:
   redis-data:
+  prometheus-data:
+  grafana-data:

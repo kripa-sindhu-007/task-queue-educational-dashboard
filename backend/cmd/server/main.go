@@ -39,7 +39,7 @@ func main() {
 	}
 
 	// Redis
-	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass, logger)
+	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass, cfg.WorkerCount, logger)
 	defer redisClient.Close()
 
 	// Prometheus metrics registered on a dedicated registry (not the global
@@ -63,7 +63,7 @@ func main() {
 	// Queue + broker. The server's broker carries its own node identity so that
 	// leases taken by in-process workers are attributed to (and reclaimable from)
 	// this node.
-	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
+	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore, cfg.SignalCap)
 	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore, logger)
 	nodeID := worker.NewNodeID()
 	nodeLogger := logger.With("node_id", nodeID)
@@ -84,7 +84,7 @@ func main() {
 		Logger:       nodeLogger,
 		Telemetry:    metrics,
 	})
-	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, workerStateStore, nodeLogger)
+	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, cfg.SignalBlock, workerStateStore, nodeLogger)
 
 	// API
 	apiHandler := api.NewHandler(api.HandlerDeps{
@@ -99,7 +99,12 @@ func main() {
 		QueuePeek:   queuePeekStore,
 		Tasks:       taskStore,
 		Nodes:       nodeStore,
-		Logger:      logger,
+		Telemetry:   metrics,
+
+		MaxQueueDepth:     cfg.MaxQueueDepth,
+		RetryAfterSeconds: cfg.RetryAfterSeconds,
+
+		Logger: logger,
 	})
 	router := api.NewRouter(apiHandler, logger, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
@@ -123,6 +128,7 @@ func main() {
 		Interval:        cfg.ReaperInterval,
 		BatchSize:       100,
 		NodeGraceWindow: cfg.NodeGraceWindow,
+		SignalCap:       cfg.SignalCap,
 		Logger:          logger,
 		Metrics:         metrics,
 	})

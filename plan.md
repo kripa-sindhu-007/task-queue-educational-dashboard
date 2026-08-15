@@ -1,191 +1,220 @@
-# Plan — Phase 3 slice: structured logging (P3.1) + Prometheus metrics (P3.2)
+# Plan — P3.4: Blocking task pickup (doorbell) replacing sleep-polling
 
-**Project:** task-queue-educational-dashboard · **Track:** full · **Date:** 2026-08-13
+**Project:** task-queue-educational-dashboard (Go backend) · **Track:** full · **Date:** 2026-08-13
+**Task (verbatim):** *Replace worker sleep-polling with blocking `BZPOPMIN` (timeout = shutdown-check interval); measure & record the latency improvement.*
 
 ## Approach
 
-Two backend-only tasks, done in order (P3.1 then P3.2) because P3.2's metric
-call sites sit right next to the log lines P3.1 rewrites, so touching each
-source file once is cheaper.
+**Chosen: (A) doorbell / wake-up signal, not a literal `BZPOPMIN` on the ready set.**
 
-**P3.1 — inject a `*slog.Logger`, no globals.** Each `main` builds one root
-JSON logger (`slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))`)
-and threads it through the existing `Deps`/`Config` structs — the same
-dependency-injection seam Phase 0 established (`ExecutorDeps`, `reaper.Config`,
-`worker.NodeConfig`, `api.HandlerDeps`). No package-level logger; every
-consumer takes a `Logger` field and derives a child with `logger.With("task_id", id)`
-or `logger.With("node_id", nodeID)` at the point where that key is known
-(executor per task, node/pool per node, reaper per task). To keep the ~40
-existing tests compiling and running without threading a logger everywhere, each
-constructor falls back to `slog.Default()` when its `Logger` field is nil (same
-nil-tolerant pattern already used for `WorkerState`/`Events`). The three
-free-function middlewares in `api/middleware.go` become logger-aware: `NewRouter`
-gains a `*slog.Logger` param and builds the `Logging`/`Recovery` closures around
-it. `store.NewRedisClient` currently calls `log.Fatalf` on a failed ping; it
-takes a `*slog.Logger` and does `logger.Error(...)` + `os.Exit(1)` instead.
+The at-least-once guarantee (P1.2) rests entirely on one fact: a task only ever leaves
+`taskqueue:ready` via the **atomic Lua claim** in `internal/broker/scripts/dequeue.lua`
+(`ZPOPMIN ready → ZADD processing(deadline) → HSET status/owner → SADD node:tasks`). Nothing
+may pop a task ID out of `ready` except that script — otherwise there is a window where the
+task is in neither `ready` nor `processing` and a crash loses it. Redis scripts cannot block,
+so `BZPOPMIN` **cannot** live inside `dequeue.lua`.
 
-**P3.2 — new `internal/telemetry/` package + `/metrics` on both binaries.**
-One dependency added: `github.com/prometheus/client_golang v1.24.1` (confirmed
-current stable via the Go module proxy; the one justified non-stdlib dep per the
-Decision Log). `telemetry.New(reg *prometheus.Registry) *Metrics` builds and
-registers the imperatively-updated collectors on a **dedicated** registry (not
-the global default — avoids duplicate-registration panics across tests and lets
-each test use a fresh registry):
-- `tasks_processed_total{type,status}` — `*prometheus.CounterVec`
-- `task_duration_seconds{type}` — `*prometheus.HistogramVec` (default buckets)
-- `enqueue_to_start_seconds` — `prometheus.Histogram`
-- `reaper_reclaims_total` — `prometheus.Counter`
+So we keep `dequeue.lua` byte-for-byte unchanged and add a **pure notification channel**: a
+Redis list `taskqueue:ready:signal` used as a doorbell. An idle worker, after a `Dequeue` that
+returns empty, blocks on `BLPOP taskqueue:ready:signal <SignalBlock>` instead of
+`time.Sleep(PollInterval)`. Every producer of a *ready* task pushes one token onto that list;
+`BLPOP` hands each token to exactly one blocked worker, which then wakes and runs the
+**existing unchanged atomic claim**. The token is a wake-up only — it is discarded; the claim
+(`ZPOPMIN`) remains the sole source of truth, so **priority ordering is preserved** (the Lua
+`ZPOPMIN` still pops the highest-priority task regardless of FIFO token order) and
+**at-least-once is preserved** (no task leaves `ready` except through the atomic claim).
 
-`queue_depth` is a **scrape-time custom collector** (`prometheus.Collector`
-reading `ZCARD` via the existing `QueuePeekStore`) rather than a periodically-set
-gauge — no background goroutine, never stale, and it follows the existing
-`ProcessingSize`/`DelayedSize`/`DeadLetterSize` read pattern. It is registered
-**only on the broker/server**, where a `QueuePeekStore` exists; workers don't
-construct one. `Metrics` is injected through the same `Deps` structs as the
-logger and is nil-tolerant (a nil `*Metrics` no-ops), so existing tests and the
-worker (which doesn't emit `queue_depth`) stay simple. The Prometheus counters
-are **additive** to the existing Redis-backed `store.MetricsStore` (which still
-feeds the dashboard's `/api/metrics`) — we do not remove it.
+Correctness never depends on a token arriving. `SignalBlock` doubles as a **fallback poll
+backstop**: if a token is ever missed, dropped, or trimmed, `BLPOP` times out after
+`SignalBlock`, the worker loops, and re-runs the atomic claim anyway. A lost token therefore
+adds *at most `SignalBlock` of latency* and can *never* lose a task. The doorbell is a pure
+optimization layered over the existing poll-correct design.
 
-`/metrics` exposure: the **server** already runs an HTTP mux, so `NewRouter`
-mounts `GET /metrics` → `promhttp.HandlerFor(reg, …)` alongside the `/api/*`
-routes (metrics stay outside the `/api` prefix, per convention). The **worker**
-has no HTTP server today, so `cmd/worker/main.go` gets a minimal
-`http.Server` on a configurable port (`METRICS_PORT`, default `:9100`) started
-in a goroutine before the blocking `node.Run(ctx)` and gracefully
-`Shutdown`-ed after it returns.
+Why `BLPOP` on a side list rather than `BZPOPMIN` directly: the task's literal wording is
+`BZPOPMIN`, but `BZPOPMIN taskqueue:ready` would pop the *actual task ID* out of the priority
+ZSET, which is exactly rejected **path (B)** below. We use `BLPOP` (a go-redis call that already
+exists, no new deps) on a dedicated signal list to get the blocking behavior without touching
+the claim. This is the honest way to honor "blocking pickup" while keeping the Phase-1 headline
+intact — a point worth calling out in `docs/BENCHMARKS.md`.
 
-**`enqueue_to_start_seconds` source — see Open decision 2.** No dedicated
-"entered ready" timestamp exists on `model.Task`; `CreatedAt` (submission time,
-already persisted in the hash and hydrated by `Dequeue`) is the closest
-available signal. Recommendation: observe `time.Since(task.CreatedAt)` at
-executor start for this slice — exact for the zero-delay loadgen workload P3.5
-will drive, with a documented caveat for delayed/retried tasks — and defer a
-precise `ready_at` (which needs Lua changes in `promote.lua`/`reclaim.lua`) to
-when it's actually needed.
+**Rejected: (B) `BZPOPMIN taskqueue:ready` + immediate processing-write.** Simpler (no producer
+signalling, no side list), but it pops the task ID into worker memory and only *then* writes it
+to `processing` in a second round trip. A `kill -9` in that gap loses the task — it is in neither
+set. That directly reintroduces the crash-loss window P1.2 was built to close and weakens the
+at-least-once guarantee this project markets as its honest headline. The reaper cannot save it
+(the task is not in `processing`, so nothing reclaims it). Not worth the small simplicity.
 
 ## Touched surface
 
-### P3.1 — structured logging (all modified)
-- `cmd/server/main.go` — build root `slog.Logger`; pass to `NewRedisClient`,
-  `ExecutorDeps.Logger`, `reaper.New`/`Config`, `worker.NodeConfig.Logger`,
-  `api.NewRouter`; replace the ~8 `log.Printf/Println` startup/shutdown lines.
-- `cmd/worker/main.go` — same root logger + threading; replace its `log.*` lines.
-- `internal/api/middleware.go` — `Logging`/`Recovery` take a `*slog.Logger`
-  (built by `NewRouter`); structured request line (method/path/status/dur).
-- `internal/api/router.go` — `NewRouter(h *Handler, logger *slog.Logger, metrics http.Handler)`.
-- `internal/api/handler.go` — `HandlerDeps.Logger *slog.Logger` (nil→Default).
-- `internal/worker/executor.go` — `ExecutorDeps.Logger`; per-task child logger
-  `Logger.With("task_id", task.ID)`; replace all `log.Printf`.
-- `internal/worker/node.go` — `NodeConfig.Logger`; `Logger.With("node_id", …)`.
-- `internal/worker/pool.go` — `NewPool` gains a logger (or reuses executor's);
-  replace `log.Printf` worker-lifecycle lines.
-- `internal/queue/delayed.go` — logger field on `DelayedScheduler`; replace `log.*`.
-- `internal/reaper/reaper.go` — `Logger` on `Reaper` (via `New`); per-task
-  `Logger.With("task_id", …)`; replace all `log.Printf`.
-- `internal/store/redis.go` — `NewRedisClient(addr, pass, logger)`; `log.Fatalf`
-  → `logger.Error` + `os.Exit(1)`; `fmt.Printf("Connected…")` → `logger.Info`.
+**Modified — consumer (blocking pickup):**
+- `internal/worker/pool.go` — replace the two `time.Sleep(p.pollInterval)` empty-queue waits in
+  `worker()` with a blocking wait on the doorbell. New loop shape: try `Dequeue`; on a task,
+  execute and `continue` (drain fast, never block while work remains); on empty, call the new
+  blocking wait for up to `SignalBlock`; loop. Keep `pollInterval` only as the short back-off
+  sleep on a `Dequeue` **error**. Distinguish three `BLPOP` outcomes: token/`redis.Nil`
+  (timeout — normal, just loop), `context.Canceled`/`ctx.Err()` (shutdown — clean return, no
+  error log), real error (log + back-off).
+- `internal/broker/broker.go` — add one method to the `Broker` interface,
+  `WaitForReady(ctx, timeout) error`, implemented by `RedisBroker` by delegating to the ready
+  queue's `BLPOP` wrapper. Interface grows by one method; the existing
+  `var _ Broker = (*RedisBroker)(nil)` assertion covers it. **No mock Broker exists** (tests use
+  the real `RedisBroker` against miniredis), so no test doubles need updating. Keeps `Pool`
+  depending only on `broker.Broker` as it does today.
 
-### P3.2 — Prometheus metrics
-- `internal/telemetry/metrics.go` — **new.** `Metrics` struct, `New(reg)`,
-  collector definitions, nil-tolerant helper methods
-  (`ObserveTaskDuration`, `IncTasksProcessed`, `ObserveEnqueueToStart`, `IncReaperReclaims`).
-- `internal/telemetry/queuedepth.go` — **new.** `queueDepthCollector`
-  implementing `prometheus.Collector`, reading `QueuePeekStore` at scrape time;
-  `RegisterQueueDepth(reg, source)`.
-- `internal/telemetry/metrics_test.go` — **new.** Registry + collector unit tests.
-- `internal/config/config.go` — **modified.** Add `MetricsPort` (`METRICS_PORT`,
-  default `9100`) + validation.
-- `cmd/server/main.go` — **modified.** Build `prometheus.NewRegistry()`,
-  `telemetry.New(reg)`, `RegisterQueueDepth(reg, queuePeekStore)`; inject
-  `*Metrics` into `ExecutorDeps`/`reaper.New`; pass promhttp handler to `NewRouter`.
-- `cmd/worker/main.go` — **modified.** Registry + `telemetry.New`; inject into
-  executor; start the minimal `/metrics` HTTP server on `METRICS_PORT`.
-- `internal/worker/executor.go` — **modified.** `ExecutorDeps.Metrics *telemetry.Metrics`;
-  observe duration + enqueue-to-start; `IncTasksProcessed(type, status)` on
-  completed / retried / dead-lettered.
-- `internal/reaper/reaper.go` — **modified.** `telemetry.Metrics` field;
-  `IncReaperReclaims()` on the `reclaimed` (and dead-node reclaim) path.
+**Modified — ready producers (each must push exactly one token per newly-ready task):**
+- `internal/queue/queue.go` — `PriorityQueue.Enqueue` (used by handler *Submit* with no delay
+  and by *RedriveFailed*) pushes a token after its `ZADD ready`. Add a shared `Signal(ctx)`
+  method and a `WaitReady(ctx, timeout) (bool, error)` `BLPOP` wrapper (owns the ready + signal
+  keys). Pattern followed: the existing `//go:embed` Lua-script members on this struct
+  (`promoteScript`).
+- `internal/queue/scripts/promote.lua` — delayed→ready batch: push one token per promoted ID
+  (RPUSH inside the existing per-ID loop, guarded by the cap). Atomic with the `ZADD ready` in
+  the same script — no Go-side widening of the loss-free window.
+- `internal/reaper/scripts/reclaim.lua` — on the `"reclaimed"` branch (task goes back to
+  `ready`), push one token, atomic with the `ZADD ready`. The `dead_lettered`/`orphan`/
+  `lost_race` branches push nothing (nothing became ready).
+- New `internal/queue/scripts/signal.lua` — the one shared, cap-guarded push used by the Go
+  `Enqueue`/`RedriveFailed` path: `if LLEN(sig) < cap then RPUSH(sig, "1") end`. The two batch
+  scripts inline the same two lines rather than call out (Lua can't `//go:embed`-compose).
+
+**Modified — keys / client / config:**
+- `internal/store/redis.go` — add `KeyReadySignal = "taskqueue:ready:signal"`. Set an explicit
+  `PoolSize` on the go-redis client `≥ WorkerCount + headroom`: each blocked `BLPOP` holds a
+  connection for up to `SignalBlock`, and heartbeat / claim / ack must not be starved of
+  connections (a starved heartbeat = a false-dead node — see risks). `NewRedisClient` takes a
+  `poolSize int` (or min-headroom) arg; both `main`s pass `cfg.WorkerCount`.
+- `internal/config/config.go` — add `SignalBlock time.Duration` (`SIGNAL_BLOCK_MS`, default
+  `1000`) = the `BLPOP` block timeout = shutdown-check granularity = fallback-poll interval, all
+  one knob; and `SignalCap int` (`SIGNAL_CAP`, default `1024`) = doorbell list bound. Validate
+  `SignalBlock > 0`, `SignalCap > 0`. Keep `PollInterval` (now only the error back-off).
+
+**Modified — construction (thread the new config through):**
+- `cmd/worker/main.go`, `cmd/server/main.go` — pass `SignalBlock`/`SignalCap` and the pool-size
+  to the relevant constructors; server's in-process pool (`RUN_WORKERS=true`) gets the doorbell
+  for free via the same `pool.go`.
+
+**New — tests & docs:**
+- `internal/worker/pool_test.go` (or extend existing) — doorbell wake + fallback (miniredis).
+- `internal/queue/*_test.go`, `internal/reaper/*_test.go` — each producer pushes a token; cap
+  holds; claim/reclaim scripts still behave (regression).
+- `internal/worker/blocking_integration_test.go` — `//go:build integration`, real Redis (Docker),
+  runs under `make test-integration`: proves `BLPOP` ctx-cancel + block-timeout behavior and
+  captures the before/after `enqueue_to_start_seconds` numbers. Pattern followed: the existing
+  `integration` build-tag convention already in the `Makefile`.
+- `docs/BENCHMARKS.md` (P3.7/P3.8 stub) — record the measured p50/p99 improvement + the honest
+  caveat (win appears at low/bursty load, not at saturation).
 
 ## Impact & risk
-- **Hot-path cost:** Prometheus `Inc`/`Observe` are in-process atomic ops, orders
-  of magnitude cheaper than the Redis round-trips already on each task path —
-  negligible. The `queue_depth` collector does one `ZCARD` per scrape (~every
-  15s), not per task.
-- **Label cardinality:** labels are `type` (bounded: sleep/http_fetch/hash +
-  unknown) and `status` (completed/retried/failed) — both low-cardinality.
-  Explicitly NOT labelling by `task_id`/`node_id` (unbounded) — those stay in
-  logs only.
-- **Worker HTTP server (new surface):** adds a listening socket to `cmd/worker`.
-  Bind to `METRICS_PORT` (default `:9100`); must shut down cleanly on SIGTERM so
-  `docker compose kill`/drain still exits promptly. Verify it doesn't clash with
-  the API's `:8080` in single-binary mode (server serves `/metrics` on `:8080`,
-  worker on `:9100`).
-- **`model.Task` schema:** no change in this slice (using `CreatedAt`); flagged
-  as Open decision 2 so we don't silently ship an imprecise metric.
-- **Behavior to preserve:** existing `/api/metrics` + `/api/metrics/enhanced`
-  (Redis-backed dashboard numbers) unchanged; the executor's Ack/Nack/reaper
-  control flow unchanged — metrics/log calls are added, not reordered around the
-  lease-fencing logic.
-- **CI/gofmt:** new files must be `gofmt`-clean and `go vet`/`test -race` green
-  (the gate is strict on `main`). `go.mod`/`go.sum` update from the one new dep;
-  run `go mod tidy` and commit `go.sum`.
-- **Regression areas:** submit → execute → retry → dead-letter pipeline; reaper
-  reclaim + dead-node reclaim; graceful shutdown of both binaries (now with an
-  extra HTTP server on the worker); the full existing test suite.
+
+- **At-least-once preservation (the core argument).** `dequeue.lua`, `ack.lua`, `nack.lua`,
+  `extend.lua`, and the `ZREM`-guard in `reclaim.lua` are all **unchanged**. A task still leaves
+  `ready` only via the atomic claim, and the reaper still reclaims any expired lease. The signal
+  list carries no task identity and is never read for correctness — worst case a missing token
+  costs `SignalBlock` latency. So the delivery guarantee is byte-for-byte what P1.2 shipped.
+- **Priority ordering preserved.** Tokens are fungible and FIFO; the actual pick is still
+  `ZPOPMIN` on the priority ZSET, so higher priority still runs first regardless of token order.
+- **Thundering herd / fairness.** `BLPOP` pops one token to exactly one blocked worker, so one
+  enqueue wakes one worker (N tokens for a batch of N → up to N woken). No `PUBLISH`-style
+  broadcast that wakes all N to fight over one task. A *spurious* wake (token exists but another
+  worker already claimed the task) simply re-blocks — non-fatal, bounded by the cap.
+- **Unbounded signal list.** If all workers are busy while producers keep enqueuing, tokens could
+  pile up to queue depth. Bounded by the cap-guarded push (`LLEN < cap` before `RPUSH`): once
+  `cap` tokens are pending, further pushes no-op, because any token beyond the number of blocked
+  workers is redundant and the busy worker re-claims via try-then-block when it frees up. The
+  fallback poll makes the exact cap non-critical.
+- **Graceful shutdown / drain.** Today `worker()` checks `ctx.Done()` at loop top and on
+  `Dequeue` error. With blocking: `BLPOP` returns every `SignalBlock` (`redis.Nil` on timeout),
+  the loop re-checks `ctx.Done()`, so a worker exits within ≤ `SignalBlock` (1s) — well inside
+  `HTTP_SHUTDOWN_TIMEOUT` (10s), `DrainTimeout` (5s), and the node deregister path in `node.go`.
+  We do **not** rely on `BLPOP` being interrupted mid-block by ctx cancellation; the bounded
+  timeout guarantees return regardless (and a `BLPOP` issued with an already-cancelled ctx
+  returns `context.Canceled`, handled as a clean exit). Executor drain-context writes (P0.5) are
+  untouched.
+- **Redis connection-pool starvation (real, must fix).** N blocked `BLPOP`s hold N connections
+  for up to `SignalBlock`. If `PoolSize < WorkerCount + heartbeat/claim/ack concurrency`, node
+  heartbeats can starve → **false-dead nodes** → spurious reclaims. Mitigation: explicit
+  `PoolSize ≥ WorkerCount + headroom` in `NewRedisClient`. (Alternative considered and rejected
+  for complexity: a single per-node doorbell goroutine fanning out to idle workers via a Go
+  channel — cleaner on connections but adds a coordination layer; with the default
+  `WORKER_COUNT=5` and an explicit pool size, per-worker `BLPOP` is simpler and matches today's
+  per-worker poll loop.)
+- **In-process mode (`RUN_WORKERS=true`).** Same `pool.go`, so the server binary benefits
+  automatically; its co-located scheduler/reaper are producers that signal regardless of consumer.
+- **miniredis limitation.** v2.38.0 **does** implement `BLPOP`/`BRPOP`/`BZPOPMIN` (verified in
+  its command table), and the tests already drive miniredis via a real go-redis client over its
+  TCP addr, so the **wake path is unit-testable**. Caveat: miniredis `BLPOP` *timeouts* use real
+  wall-clock and are **not** advanced by `mr.FastForward`. So unit tests exercise the wake path
+  (push token → immediate claim) and use a *tiny* block (e.g. 50ms) for the fallback-timeout
+  assertion; the full block-timeout + ctx-cancel behavior at the 1s setting is proven in the
+  `//go:build integration` real-Redis test. This keeps `go test -race` (unit CI) hermetic and
+  fast and green.
+- **CI (gofmt/vet/`test -race`).** No new deps (`BLPOP` is an existing go-redis call). Blocking
+  unit tests keep block durations tiny and prefer the deterministic wake path to avoid `-race`
+  flakiness; the real-Redis test is build-tagged out of the default `test` target.
+
+**Regression areas to re-verify:** the full submit→execute→retry→dead-letter pipeline; delayed
+promotion (`promote.lua`); reaper lease-expiry and eager dead-node reclaim (`reclaim.lua`);
+redrive; graceful shutdown/drain on both `cmd/server` and `cmd/worker`; the `docker compose
+--scale worker=N` kill-a-worker zero-loss demo.
 
 ## Tasks
-- [ ] **P3.1a** Thread `*slog.Logger` through `store.NewRedisClient`, `ExecutorDeps`,
-  `reaper` (`New`/`Config`), `worker.NodeConfig`/`Pool`, `DelayedScheduler`,
-  `api.HandlerDeps`/`NewRouter`/middleware; nil→`slog.Default()`. Replace every
-  `log.Printf/Println/Fatalf` with structured `slog` calls keyed by
-  `task_id`/`node_id` via child loggers. `(api)` — *verify:* `rg '"log"|log\.(Printf|Println|Fatalf)' cmd internal` returns nothing; `go build ./...` + full suite green.
-- [ ] **P3.1b** Root JSON logger built in both `main.go`s and injected. `(api)` —
-  *verify:* run the server binary against miniredis/a manual Redis and confirm
-  stdout is JSON lines carrying `task_id` on task events and `node_id` on node
-  events (assert shape in a small `slog` handler unit test capturing a `bytes.Buffer`).
-- [ ] **P3.2a** Add `client_golang v1.24.1` (`go get` + `go mod tidy`); create
-  `internal/telemetry` with `New(reg)`, the four imperative collectors, and
-  nil-tolerant helper methods. `(api)` — *verify:* `telemetry_test.go` registers
-  on a fresh registry, calls each helper, and asserts via `testutil.CollectAndCount`
-  / `testutil.ToFloat64` that samples land with the right labels.
-- [ ] **P3.2b** `queueDepthCollector` + `RegisterQueueDepth`; scrape reads
-  `ZCARD` through `QueuePeekStore`. `(api)` — *verify:* miniredis test seeds the
-  ready set, registers the collector, and asserts `queue_depth` via
-  `testutil.CollectAndCompare`.
-- [ ] **P3.2c** Wire metrics at sources: executor observes `task_duration_seconds`,
-  `enqueue_to_start_seconds`, and `tasks_processed_total{type,status}`; reaper
-  increments `reaper_reclaims_total`. `(api)` — *verify:* miniredis executor test
-  drives a success + a dead-letter and asserts the counters advanced with correct
-  labels; reaper test asserts `reaper_reclaims_total` after a reclaim.
-- [ ] **P3.2d** Expose `/metrics`: `NewRouter` mounts it on the server; add
-  `MetricsPort` config + a minimal `/metrics` HTTP server to `cmd/worker/main.go`
-  started/stopped around `node.Run`. `(api)` — *verify:* `httptest` request to
-  the server router returns 200 with `text/plain` Prometheus exposition and
-  contains the metric names; `go build ./cmd/...` for both binaries.
+
+- [ ] Add `KeyReadySignal` + explicit `PoolSize` to `NewRedisClient`; both `main`s pass worker
+      count. Prove: unit asserts pool size ≥ worker count; build green. `(api)`
+- [ ] Add `SignalBlock` + `SignalCap` config with defaults + validation. Prove: config test for
+      defaults and rejection of non-positive values. `(api)`
+- [ ] Add `signal.lua` + `PriorityQueue.Signal(ctx)` and `WaitReady(ctx, timeout)` (`BLPOP`
+      wrapper). Prove: unit — `Signal` pushes exactly one token and respects the cap; `WaitReady`
+      returns true when a token is present. `(api)`
+- [ ] Make `PriorityQueue.Enqueue` signal. Prove: unit — after `Enqueue`, `LLEN` of the signal
+      list is 1; a blocked `WaitReady` returns. `(api)`
+- [ ] Add the cap-guarded token push to `promote.lua` (per promoted ID). Prove: unit — promote 3
+      delayed tasks ⇒ 3 tokens (capped); promotion counts unchanged. `(api)`
+- [ ] Add the cap-guarded token push to `reclaim.lua` `"reclaimed"` branch only. Prove: unit —
+      lease-expiry reclaim pushes 1 token; `dead_lettered`/`lost_race`/`orphan` push none;
+      existing reaper tests still green. `(api)`
+- [ ] Extend the `Broker` interface with `WaitForReady`; implement on `RedisBroker`. Prove:
+      compile-time assertion + a unit that `WaitForReady` unblocks after an `Enqueue`. `(api)`
+- [ ] Rewrite the `pool.go` empty-queue branch to block on `WaitForReady(ctx, SignalBlock)`;
+      keep `pollInterval` for error back-off; handle timeout/cancel/error distinctly. Prove:
+      unit (miniredis) — worker picks up an enqueued task promptly via the doorbell, and (short
+      block) still picks up a task placed directly in `ready` with **no** token (fallback). `(api)`
+- [ ] Thread `SignalBlock`/`SignalCap`/pool-size through `cmd/server` + `cmd/worker`. Prove:
+      both binaries build; server in-process pool + standalone worker both start. `(api)`
+- [ ] `//go:build integration` real-Redis test (Docker): `BLPOP` block-timeout + ctx-cancel
+      shutdown within `SignalBlock`; capture before/after `enqueue_to_start_seconds`. Prove:
+      `make test-integration` green against a local Redis. `(api)`
+- [ ] Record numbers + honest caveat in `docs/BENCHMARKS.md`; update `PROGRESS.md` (P3.4 done,
+      Decision Log entry: doorbell chosen over `BZPOPMIN`-direct, reasons). `(api)`
 
 ## Verification
-- `gofmt -l cmd internal` → empty; `go vet ./...` clean; `go build ./...` and
-  `go build ./cmd/server ./cmd/worker` clean.
-- `go test ./... -race -count=1` — existing ~40 tests still green **plus** the
-  new telemetry/executor/reaper/logging assertions.
-- `rg -n '"log"|log\.(Printf|Println|Fatalf)' cmd internal` → no matches (P3.1 done).
-- Manual (no Docker needed): run `cmd/server` against a local/miniredis-backed
-  Redis, `curl :8080/metrics` and confirm all five metric names appear and
-  `queue_depth` reflects seeded ready tasks; submit a task and watch a JSON log
-  line with `task_id`. (Kripa runs the full Docker stack + Prometheus scrape and
-  the loadgen ramp separately — that's P3.3/P3.5, out of this slice.)
 
-## Open decisions (max 1–2, each with a recommendation)
-1. **Worker `/metrics` port.** Recommend `METRICS_PORT` env, default `:9100`
-   (fixed container port so Prometheus scrapes scaled workers over the compose
-   network; server keeps `/metrics` on its existing `:8080`). Alternative `:2112`
-   (client_golang example convention) — no functional difference; `:9100` reads
-   as "the metrics port" and avoids the API port.
-2. **`enqueue_to_start_seconds` source now vs precise `ready_at` field.**
-   Recommend using `CreatedAt` this slice (zero schema/Lua change; exact for the
-   zero-delay loadgen benchmark, documented caveat for delayed/retried tasks) and
-   deferring a dedicated `ready_at` timestamp — which requires writing the field
-   inside `promote.lua`/`reclaim.lua` — until a later Phase 3 task actually needs
-   sub-metric precision. If you'd rather have it exact from day one, say so and
-   I'll fold the `model.Task.ReadyAt` + Lua changes into P3.2c.
+- `make test` (miniredis, `-race`) and `make vet`, `gofmt -l` clean — full unit suite green
+  including the new doorbell/producer/cap tests and all existing broker/reaper/queue tests.
+- `make test-integration` against a local Docker Redis — blocking pickup, ctx-cancel shutdown
+  ≤ `SignalBlock`, and the latency capture pass.
+- **Latency measurement (the "measure & record" half).** The instrument already exists: the
+  executor observes `enqueue_to_start_seconds` from `Task.CreatedAt` (P3.2). Drive a low/moderate
+  arrival rate (queue usually empty — the regime where a worker would otherwise be mid-`Sleep`)
+  against (1) the old poll build and (2) the doorbell build, and scrape `/metrics`. Expect the
+  `enqueue_to_start_seconds` p50/p99 to drop by roughly the polling dead-time (up to ~`PollInterval`
+  ≈ 500ms at p99 under bursty arrivals) to sub-millisecond wake. Record p50/p99 + machine specs
+  in `docs/BENCHMARKS.md`, with the caveat that under sustained saturation (queue never empty) the
+  two are equivalent — the win is at low/bursty load.
+- Manual smoke: `docker compose up --scale worker=5`, submit a burst, confirm processing; `SIGTERM`
+  a worker and confirm it drains and exits within ~1s; `docker kill` a worker mid-burst and
+  confirm the existing zero-loss reclaim demo still holds (`submitted == completed + dead_lettered`).
+
+## Open decisions (max 2, each with a recommendation)
+
+1. **Merge shutdown-check interval and fallback-poll into one `SignalBlock` knob at 1s?**
+   Recommend **yes, 1s**. The task names two timers (shutdown-check timeout, 1–5s fallback);
+   a single `BLPOP` block value satisfies both — 1s bounds worst-case shutdown latency and
+   worst-case dropped-token latency, comfortably inside the 5s drain / 10s shutdown budgets, while
+   giving near-instant normal wake. Splitting them buys nothing here. (This is the only knob that
+   plausibly wants your sign-off; everything else is decided above.)
+2. **Signal push for the Go `Enqueue` path — shared `signal.lua` vs plain pipelined `LLEN`+`RPUSH`.**
+   Recommend the **shared `signal.lua`** (atomic cap-check-and-push, one embedded script reused by
+   `Enqueue`/`RedriveFailed`, same two lines inlined into `promote.lua`/`reclaim.lua`). A non-atomic
+   Go `LLEN`+`RPUSH` would be harmless given the fallback backstop, but the Lua version is tidy,
+   race-free, and keeps the cap logic in exactly one place.

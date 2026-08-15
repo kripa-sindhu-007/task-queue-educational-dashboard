@@ -8,7 +8,8 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 go build -o /server ./cmd/server && \
-    CGO_ENABLED=0 go build -o /worker ./cmd/worker
+    CGO_ENABLED=0 go build -o /worker ./cmd/worker && \
+    CGO_ENABLED=0 go build -o /loadgen ./cmd/loadgen
 
 FROM alpine:3.19
 
@@ -17,9 +18,10 @@ LABEL org.opencontainers.image.description="Task Queue Backend — Go-based dist
 LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache ca-certificates
-# Both binaries ship in one image; docker-compose picks which to run per service.
+# All binaries ship in one image; docker-compose picks which to run per service.
 COPY --from=builder /server /server
 COPY --from=builder /worker /worker
+COPY --from=builder /loadgen /loadgen
 EXPOSE 8080
 CMD ["/server"]
 

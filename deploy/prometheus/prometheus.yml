@@ -1,0 +1,40 @@
+# Prometheus scrape config for the task-queue platform (P3.3).
+#
+# Two application jobs plus a self-scrape:
+#   * taskqueue-server  — the API/scheduler/reaper binary. Owns queue_depth and
+#     reaper_reclaims_total. Single, stable target (compose service `backend`).
+#   * taskqueue-workers — the standalone worker replicas. Own tasks_processed_total,
+#     task_duration_seconds and enqueue_to_start_seconds. Scaled with
+#     `docker compose up --scale worker=N`, so they have NO fixed hostname; we
+#     discover them via Docker's embedded DNS. An A-record lookup of the service
+#     name `worker` returns one record per running replica, so `dns_sd_configs`
+#     picks up (and drops) replicas automatically as you scale or kill them —
+#     exactly what the kill-a-node demo needs.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: taskqueue-server
+    static_configs:
+      - targets: ["backend:8080"]
+        labels:
+          role: server
+
+  - job_name: taskqueue-workers
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9100
+        refresh_interval: 10s
+    relabel_configs:
+      # Label each replica by the IP:port DNS returned, so panels can break down
+      # per-worker if desired.
+      - source_labels: [__address__]
+        target_label: instance
+      - target_label: role
+        replacement: worker
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.TaskStore, *queue.Priorit
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	tasks := store.NewTaskStore(client)
-	q := queue.NewPriorityQueue(client, tasks)
+	q := queue.NewPriorityQueue(client, tasks, queue.DefaultSignalCap)
 	delayed := queue.NewDelayedScheduler(client, q, tasks, store.NewEventStore(client), nil)
 
 	h := NewHandler(HandlerDeps{
@@ -73,6 +73,56 @@ func TestSubmitIdenticalFieldsCreatesTwoEntries(t *testing.T) {
 	}
 	if size != 2 {
 		t.Fatalf("expected 2 ready entries, got %d", size)
+	}
+}
+
+// Backpressure (P3.6): once the ready queue reaches MaxQueueDepth, further
+// submissions are shed with 429 + Retry-After and leave no trace.
+func TestSubmitBackpressure(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	tasks := store.NewTaskStore(client)
+	q := queue.NewPriorityQueue(client, tasks, queue.DefaultSignalCap)
+	h := NewHandler(HandlerDeps{
+		Queue:             q,
+		Delayed:           queue.NewDelayedScheduler(client, q, tasks, store.NewEventStore(client), nil),
+		Metrics:           store.NewMetricsStore(client),
+		Events:            store.NewEventStore(client),
+		Tasks:             tasks,
+		QueuePeek:         store.NewQueuePeekStore(client, tasks),
+		Redis:             client,
+		MaxQueueDepth:     2,
+		RetryAfterSeconds: 3,
+	})
+	srv := NewRouter(h, nil, nil)
+
+	// First two submits fill the ready queue to the cap (depth 0->1->2).
+	submit(t, srv, `{"priority":1}`)
+	submit(t, srv, `{"priority":1}`)
+
+	// Third submit sees depth==2 (>= cap) and is shed.
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"priority":1}`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 under backpressure, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "3" {
+		t.Fatalf("Retry-After = %q, want \"3\"", got)
+	}
+	// The shed submission must not have been enqueued.
+	size, err := q.Size(context.Background())
+	if err != nil {
+		t.Fatalf("size: %v", err)
+	}
+	if size != 2 {
+		t.Fatalf("ready size = %d, want 2 (rejected submit must leave no trace)", size)
 	}
 }
 

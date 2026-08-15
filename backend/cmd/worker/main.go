@@ -36,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass, logger)
+	redisClient := store.NewRedisClient(cfg.RedisAddr, cfg.RedisPass, cfg.WorkerCount, logger)
 	defer redisClient.Close()
 
 	// Prometheus metrics on a dedicated registry. The worker emits the task and
@@ -54,7 +54,7 @@ func main() {
 	eventStore := store.NewEventStore(redisClient)
 	nodeStore := store.NewNodeStore(redisClient, cfg.HeartbeatTTL)
 
-	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore)
+	priorityQueue := queue.NewPriorityQueue(redisClient, taskStore, cfg.SignalCap)
 	delayedScheduler := queue.NewDelayedScheduler(redisClient, priorityQueue, taskStore, eventStore, logger)
 
 	nodeID := worker.NewNodeID()
@@ -74,7 +74,7 @@ func main() {
 		Logger:       nodeLogger,
 		Telemetry:    metrics,
 	})
-	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, nil, nodeLogger)
+	pool := worker.NewPool(redisBroker, executor, cfg.WorkerCount, cfg.PollInterval, cfg.SignalBlock, nil, nodeLogger)
 
 	node := worker.NewNode(worker.NodeConfig{
 		Nodes:             nodeStore,

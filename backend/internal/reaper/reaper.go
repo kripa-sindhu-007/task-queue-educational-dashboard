@@ -28,6 +28,7 @@ type Config struct {
 	Interval        time.Duration // how often the reaper scans (e.g. 5s)
 	BatchSize       int64         // max expired tasks to process per tick (e.g. 100)
 	NodeGraceWindow time.Duration // how long a dead node stays visible (alive:false) before it's pruned
+	SignalCap       int           // P3.4: doorbell cap; the reclaim script rings it once per reclaimed (→ready) task
 	Logger          *slog.Logger
 	Metrics         *telemetry.Metrics
 }
@@ -60,6 +61,9 @@ func New(
 ) *Reaper {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 100
+	}
+	if cfg.SignalCap <= 0 {
+		cfg.SignalCap = 1024 // matches config.SignalCap default; keeps existing reaper tests doorbell-agnostic
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -213,8 +217,8 @@ func (r *Reaper) reclaimTask(ctx context.Context, taskID string) {
 	// task ID and the owning node's task set (from the record we loaded) so the
 	// reclaim also clears the task from that node's in-flight set.
 	result, err := r.reclaimCmd.Run(ctx, r.client,
-		[]string{store.KeyProcessing, store.KeyReady, store.TaskKey(taskID), store.NodeTasksKey(task.Owner)},
-		taskID,
+		[]string{store.KeyProcessing, store.KeyReady, store.TaskKey(taskID), store.NodeTasksKey(task.Owner), store.KeyReadySignal},
+		taskID, r.cfg.SignalCap,
 	).Text()
 	if err != nil {
 		taskLog.Error("reaper: reclaim script error", "error", err)

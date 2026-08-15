@@ -12,8 +12,10 @@
 -- KEYS[2] = ready set (taskqueue:ready)
 -- KEYS[3] = task record key (taskqueue:task:{id})
 -- KEYS[4] = owning node's task SET (taskqueue:node:{owner}:tasks)
+-- KEYS[5] = ready doorbell signal list (taskqueue:ready:signal)
 --
 -- ARGV[1] = task ID
+-- ARGV[2] = doorbell cap (max tokens retained in the signal list)
 --
 -- Returns:
 --   "reclaimed" — task moved back to ready with retries incremented
@@ -49,5 +51,14 @@ end
 -- Increment retries, reset status to pending, clear ownership, put back in ready.
 redis.call('HSET', KEYS[3], 'retries', tostring(retries + 1), 'status', 'pending', 'owner', '')
 redis.call('ZADD', KEYS[2], -priority, ARGV[1])
+
+-- Ring the doorbell so a blocked worker re-claims the reclaimed task without
+-- waiting for the fallback poll. Only the "reclaimed" branch makes a task ready,
+-- so only it pushes a token; dead_lettered/orphan/lost_race push nothing. Atomic
+-- with the ZADD ready above, and cap-guarded like every other producer.
+local signal_cap = tonumber(ARGV[2])
+if redis.call('LLEN', KEYS[5]) < signal_cap then
+    redis.call('RPUSH', KEYS[5], '1')
+end
 
 return "reclaimed"

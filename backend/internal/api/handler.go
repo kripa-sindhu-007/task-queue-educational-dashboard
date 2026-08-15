@@ -15,6 +15,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/telemetry"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/worker"
 )
 
@@ -32,7 +33,14 @@ type HandlerDeps struct {
 	QueuePeek   *store.QueuePeekStore
 	Tasks       *store.TaskStore
 	Nodes       *store.NodeStore
-	Logger      *slog.Logger // nil falls back to slog.Default()
+	Telemetry   *telemetry.Metrics // nil is a safe no-op
+
+	// Backpressure (P3.6). When MaxQueueDepth > 0, SubmitTask sheds new work with
+	// HTTP 429 + Retry-After once the ready queue reaches MaxQueueDepth.
+	MaxQueueDepth     int
+	RetryAfterSeconds int
+
+	Logger *slog.Logger // nil falls back to slog.Default()
 }
 
 type Handler struct {
@@ -75,6 +83,30 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
+	// Backpressure (P3.6): shed load early when the ready queue is already too
+	// deep. This runs before any write (record/event/enqueue), so a rejected
+	// submission leaves no trace and at-least-once semantics are untouched. One
+	// O(1) ZCARD per submit; only active when MaxQueueDepth > 0.
+	if h.deps.MaxQueueDepth > 0 && h.deps.QueuePeek != nil {
+		if depth, err := h.deps.QueuePeek.ReadySize(ctx); err == nil && depth >= int64(h.deps.MaxQueueDepth) {
+			secs := h.deps.RetryAfterSeconds
+			if secs <= 0 {
+				secs = 5
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			h.deps.Telemetry.IncTasksRejected("queue_full")
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":               "queue is full; retry later",
+				"queue_depth":         depth,
+				"max_queue_depth":     h.deps.MaxQueueDepth,
+				"retry_after_seconds": secs,
+			})
+			return
+		}
+	}
+
 	id := req.ID
 	if id == "" {
 		id = genID()
@@ -82,7 +114,7 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		// Client-supplied ID: check for duplicates (idempotent enqueue, P1.6).
 		// If a record already exists, reject to prevent double-submission from
 		// network retries. Server-generated IDs are always unique so they skip this.
-		exists, err := h.deps.Tasks.Exists(r.Context(), id)
+		exists, err := h.deps.Tasks.Exists(ctx, id)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -105,8 +137,6 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		Status:     model.StatusPending,
 		CreatedAt:  time.Now(),
 	}
-
-	ctx := r.Context()
 
 	// Persist the canonical record before referencing its ID from any queue.
 	if err := h.deps.Tasks.Save(ctx, task); err != nil {

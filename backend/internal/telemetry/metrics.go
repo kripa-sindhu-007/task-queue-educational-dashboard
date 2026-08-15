@@ -23,6 +23,7 @@ type Metrics struct {
 	taskDuration   *prometheus.HistogramVec // task_duration_seconds{type}
 	enqueueToStart prometheus.Histogram     // enqueue_to_start_seconds
 	reaperReclaims prometheus.Counter       // reaper_reclaims_total
+	tasksRejected  *prometheus.CounterVec   // tasks_rejected_total{reason}
 }
 
 // New builds the collectors and registers them on reg. It panics (via
@@ -48,8 +49,12 @@ func New(reg *prometheus.Registry) *Metrics {
 			Name: "reaper_reclaims_total",
 			Help: "Total leases reclaimed by the reaper (expired or dead-node).",
 		}),
+		tasksRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tasks_rejected_total",
+			Help: "Total submissions rejected by backpressure (HTTP 429), partitioned by reason.",
+		}, []string{"reason"}),
 	}
-	reg.MustRegister(m.tasksProcessed, m.taskDuration, m.enqueueToStart, m.reaperReclaims)
+	reg.MustRegister(m.tasksProcessed, m.taskDuration, m.enqueueToStart, m.reaperReclaims, m.tasksRejected)
 	return m
 }
 
@@ -93,4 +98,15 @@ func (m *Metrics) IncReaperReclaims() {
 		return
 	}
 	m.reaperReclaims.Inc()
+}
+
+// IncTasksRejected records one submission shed by backpressure (HTTP 429).
+func (m *Metrics) IncTasksRejected(reason string) {
+	if m == nil {
+		return
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.tasksRejected.WithLabelValues(reason).Inc()
 }

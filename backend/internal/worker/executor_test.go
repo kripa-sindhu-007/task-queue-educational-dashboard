@@ -40,7 +40,7 @@ func newExecEnv(t *testing.T, logger *slog.Logger, metrics *telemetry.Metrics) e
 	t.Cleanup(func() { client.Close() })
 
 	tasks := store.NewTaskStore(client)
-	pq := queue.NewPriorityQueue(client, tasks)
+	pq := queue.NewPriorityQueue(client, tasks, queue.DefaultSignalCap)
 	delayed := queue.NewDelayedScheduler(client, pq, tasks, nil, logger)
 	b := broker.NewRedisBroker(client, tasks, pq, delayed, 30*time.Second, "test-node")
 
