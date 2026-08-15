@@ -33,6 +33,12 @@ type Config struct {
 	HeartbeatTTL      time.Duration // node heartbeat key expiry (must exceed HeartbeatInterval)
 	NodeGraceWindow   time.Duration // how long a dead node stays visible (alive:false) before the reaper prunes it
 
+	// Phase 3: backpressure (P3.6). When MaxQueueDepth > 0, submissions are shed
+	// with HTTP 429 + Retry-After once the ready queue reaches that depth. 0
+	// disables backpressure (unbounded intake — the pre-P3.6 behavior).
+	MaxQueueDepth     int // ready-queue depth at/above which new submits are rejected; 0 = disabled
+	RetryAfterSeconds int // value for the Retry-After header on a 429
+
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
@@ -62,6 +68,9 @@ func Load() (*Config, error) {
 		HeartbeatInterval: getEnvMillis("HEARTBEAT_INTERVAL_MS", 3000), // 3s beat
 		HeartbeatTTL:      getEnvMillis("HEARTBEAT_TTL_MS", 10000),     // 10s expiry (tolerates missed beats)
 		NodeGraceWindow:   getEnvMillis("DEAD_NODE_GRACE_MS", 30000),   // 30s dead-card visibility before prune
+
+		MaxQueueDepth:     getEnvInt("MAX_QUEUE_DEPTH", 0),     // 0 = backpressure disabled
+		RetryAfterSeconds: getEnvInt("RETRY_AFTER_SECONDS", 5), // Retry-After header on a 429
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),
@@ -114,6 +123,12 @@ func (c *Config) validate() error {
 	}
 	if c.NodeGraceWindow <= 0 {
 		return fmt.Errorf("config: DEAD_NODE_GRACE_MS must be > 0")
+	}
+	if c.MaxQueueDepth < 0 {
+		return fmt.Errorf("config: MAX_QUEUE_DEPTH must be >= 0, got %d", c.MaxQueueDepth)
+	}
+	if c.RetryAfterSeconds <= 0 {
+		return fmt.Errorf("config: RETRY_AFTER_SECONDS must be > 0, got %d", c.RetryAfterSeconds)
 	}
 	return nil
 }

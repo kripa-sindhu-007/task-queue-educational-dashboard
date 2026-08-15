@@ -24,6 +24,11 @@ services:
       - RUN_WORKERS=false
       - REAPER_INTERVAL_MS=5000
       - HEARTBEAT_TTL_MS=10000
+      # P3.6 backpressure: shed submits with 429 + Retry-After once the ready
+      # queue reaches MAX_QUEUE_DEPTH (0 disables). Tuned high so normal use is
+      # unaffected but a large loadgen ramp trips it.
+      - MAX_QUEUE_DEPTH=20000
+      - RETRY_AFTER_SECONDS=2
     depends_on:
       redis:
         condition: service_healthy

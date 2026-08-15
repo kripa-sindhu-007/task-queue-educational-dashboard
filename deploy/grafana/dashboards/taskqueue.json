@@ -376,6 +376,42 @@
           "legendFormat": "retries/s"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Rejected / Backpressure (per sec)",
+      "description": "Rate of submissions shed with HTTP 429 when the ready queue exceeds MAX_QUEUE_DEPTH. Flat at zero until backpressure engages, then rises as producers are throttled.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "spanNulls": true
+          },
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(tasks_rejected_total[1m]))",
+          "legendFormat": "rejected/s"
+        }
+      ]
     }
   ]
 }

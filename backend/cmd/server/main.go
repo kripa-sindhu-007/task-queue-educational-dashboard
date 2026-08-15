@@ -99,7 +99,12 @@ func main() {
 		QueuePeek:   queuePeekStore,
 		Tasks:       taskStore,
 		Nodes:       nodeStore,
-		Logger:      logger,
+		Telemetry:   metrics,
+
+		MaxQueueDepth:     cfg.MaxQueueDepth,
+		RetryAfterSeconds: cfg.RetryAfterSeconds,
+
+		Logger: logger,
 	})
 	router := api.NewRouter(apiHandler, logger, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
