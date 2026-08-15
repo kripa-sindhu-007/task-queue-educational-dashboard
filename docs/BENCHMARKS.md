@@ -79,8 +79,48 @@ tight `Dequeue` loop, and the two builds are equivalent. The doorbell removes
   (`//go:build integration`), because miniredis's BLPOP timeout uses real wall-clock
   and is not advanced by `mr.FastForward`.
 
-## TODO (P3.7 / P3.8)
+## P3.7 — Zero-loss soak (harness)
 
-- Throughput under a `cmd/loadgen` ramp (100 → 2000 tasks/sec) with Grafana p50/p99.
-- 30-minute sustained soak asserting `submitted == completed + dead_lettered` (zero
-  loss), including a kill-a-worker chaos interval.
+`scripts/soak.sh` drives a sustained load with `cmd/loadgen`, optionally kills and
+restores a worker mid-run (chaos), waits for the queue to fully drain, and then
+asserts the **zero-loss invariant** from Redis ground truth:
+
+```
+ready == 0 && processing == 0 && delayed == 0
+AND submitted == processed + failed      (accepted == completed + dead-lettered)
+```
+
+`submitted` counts only *accepted* submissions — backpressure (P3.6) sheds before
+the counter increments — so it is the correct denominator even with
+`MAX_QUEUE_DEPTH` active. `retries` are re-attempts, not terminal, and are excluded.
+
+Reproduce (from the repo root, with the stack running):
+
+```bash
+# 5-minute validation run
+SOAK_DURATION=5m SOAK_RATE=250 ./scripts/soak.sh
+
+# kill+restore a worker mid-run (chaos) — proves zero loss across a node death
+SOAK_DURATION=5m SOAK_CHAOS=1 ./scripts/soak.sh
+
+# publishable 30-minute soak
+SOAK_DURATION=30m SOAK_RATE=250 ./scripts/soak.sh
+```
+
+Config is env-driven (`SOAK_RATE`, `SOAK_DURATION`, `SOAK_MIX`, `SOAK_CONCURRENCY`,
+`SOAK_WORKERS`, `SOAK_CHAOS`, …; see the script header). It prints a PASS/FAIL
+summary and exits non-zero on a loss/drain violation, so it doubles as a check.
+
+### Results
+
+_Pending a measured run — to be filled in from `soak.sh` output (5-min validation
+and the 30-min publishable soak, steady + chaos) along with the loadgen-ramp
+throughput and Grafana p50/p99._
+
+## TODO (P3.8)
+
+- Fill the soak results table above from `scripts/soak.sh` (steady + chaos, 30-min).
+- Throughput under a `cmd/loadgen` ramp (100 → 2000 tasks/sec) with Grafana p50/p99,
+  for a CPU-bound (`hash`) and an IO-bound (`sleep`) mix.
+- Fold the honest caveats (sustainable rate vs saturation; backpressure interaction)
+  into the final write-up.

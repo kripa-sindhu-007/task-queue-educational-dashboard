@@ -18,7 +18,7 @@
 | Field | Value |
 |---|---|
 | **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) + P3.4 (blocking pickup) + P3.3 (Prometheus+Grafana in compose) + P3.5 (loadgen) + P3.6 (backpressure) ✅ done; P3.7–P3.8 todo. |
-| **Current task** | P3.7 (benchmarks: poll-vs-blocking, 30-min soak asserting zero loss, record specs) — next. Backpressure (429 + Retry-After) now caps intake at `MAX_QUEUE_DEPTH`. |
+| **Current task** | P3.7 (benchmarks) IN PROGRESS — `scripts/soak.sh` harness built; **2-min validation soak PASSED (zero loss)** 2026-08-15. **Full 45-min soak scheduled tomorrow (2026-08-16)** + loadgen-ramp throughput → then P3.8 write-up. |
 | **Last updated** | 2026-08-15 |
 | **Last session** | 2026-08-13 — P3.4 blocking task pickup: doorbell (`BLPOP taskqueue:ready:signal`) replaces worker sleep-polling; `dequeue.lua` byte-for-byte unchanged (at-least-once preserved). All 4 ready-producers ring a cap-guarded doorbell (`signal.lua` + inline in `promote.lua`/`reclaim.lua`). New `SignalBlock`/`SignalCap` config; explicit go-redis `PoolSize ≥ WorkerCount + headroom`. 68 tests green (+15) incl. real-Redis integration; measured p99 `enqueue_to_start` ~495 ms → ~0.86 ms at low/bursty load (`docs/BENCHMARKS.md`). |
 | **Hours spent / budget** | ~40 / ~100 |
@@ -158,7 +158,7 @@ cluster; the broker detects dead nodes and reclaims their work.
 | P3.4 | ☑ Replace worker sleep-polling with blocking pickup (timeout = shutdown-check interval); measure & record the latency improvement | done | **Doorbell, not literal `BZPOPMIN`** (see Decision Log + Known Gotchas). Idle workers `BLPOP taskqueue:ready:signal <SignalBlock>` instead of `time.Sleep`; `dequeue.lua` unchanged so at-least-once + priority hold. All 4 ready-producers push one cap-guarded token: `PriorityQueue.Enqueue` (Go `signal.lua`), `promote.lua` + `reclaim.lua` `"reclaimed"` branch (inline). New `SignalBlock` (1s; = block = shutdown-check = fallback-poll) + `SignalCap` (1024) config; explicit `PoolSize ≥ WorkerCount + headroom`. Measured ~495 ms → ~0.86 ms p99 at low/bursty load (`docs/BENCHMARKS.md`) |
 | P3.5 | ☑ `cmd/loadgen`: configurable rate, duration, task-type mix | done | Hand-rolled, **stdlib-only** (no k6). Constant `-rate` or linear `-ramp start:end` over `-duration`, weighted `-mix` (e.g. `hash:60,sleep:40`), `-concurrency`, per-type payload tuning (`-sleep-ms`/`-fail-rate`/`-hash-rounds`/`-fetch-url`), `-seed`. Fractional-accumulator scheduler; per-sec progress + summary (submit p50/p95/p99, `behind_ticks`, 429 count → feeds P3.6). Profiled compose service (`docker compose run --rm loadgen …`, never starts on `up`) + `make loadgen ARGS=…`. Verified live: ramp 50→900/s (28.5k tasks, 0 err) drove `queue_depth` 0→26K and `enqueue_to_start` p99→10s on Grafana |
 | P3.6 | ☑ Backpressure: max queue depth → `429` + `Retry-After` on submit | done | `MAX_QUEUE_DEPTH` (0=disabled) + `RETRY_AFTER_SECONDS` config. `SubmitTask` sheds early (ZCARD ready ≥ cap → 429 + `Retry-After` header, before any write; at-least-once untouched). New `tasks_rejected_total{reason}` metric + Grafana "Rejected / Backpressure" panel. compose default `MAX_QUEUE_DEPTH=20000`. Verified live: 2000/s vs cap → 68,997 rejected/0 err, `queue_depth` **plateaus at 20K** (vs 26K runaway in P3.5), `Retry-After: 2` on a live 429 |
-| P3.7 | ☐ Benchmarks: before/after poll-vs-blocking; sustained 30-min soak asserting zero lost tasks; record machine specs | todo | |
+| P3.7 | ☐ Benchmarks: before/after poll-vs-blocking; sustained 30-min soak asserting zero lost tasks; record machine specs | in-progress | **Harness built** (`scripts/soak.sh`) + **2-min validation soak PASSED** 2026-08-15 (rate 30/s, hash:50/sleep:50: 3599 submitted == 3586 completed + 13 dead-lettered, 735 retries, queues drained, zero loss). poll-vs-blocking already recorded (P3.4). **Full 45-min soak scheduled for 2026-08-16 (tomorrow)** + loadgen-ramp throughput → then fill BENCHMARKS.md (P3.8) |
 | P3.8 | ☐ Docs: `docs/BENCHMARKS.md` — throughput, p50/p99 enqueue-to-start latency, zero-loss chaos results | todo | |
 
 **Acceptance criteria:**
@@ -274,6 +274,15 @@ cluster; the broker detects dead nodes and reclaims their work.
 - **Next:** finish P1.3 tests, then start P1.4
 - **Blockers:** none
 ```
+
+---
+
+### 2026-08-15 — Phase 3 P3.7 soak harness (implementation only) (~0.5h)
+- **Done:** Built `scripts/soak.sh` — reproducible zero-loss soak harness. Flushes to a clean baseline, drives `cmd/loadgen` at a configurable rate/duration/mix, optionally kills+restores a worker mid-run (`SOAK_CHAOS=1`), waits for full drain, then asserts the invariant from Redis ground truth: `ready==0 && processing==0 && delayed==0` AND `submitted == processed + failed` (accepted == completed + dead-lettered; `submitted` counts accepted-only since backpressure sheds before the counter, so it's the right denominator; `retries` excluded as non-terminal). Reads `HGET taskqueue:metrics {submitted,processed,failed,retries}`, `ZCARD` ready/processing/delayed, `LLEN taskqueue:deadletter`, and optional `reaper_reclaims_total` from Prometheus. Env-driven config; PASS/FAIL summary + non-zero exit on violation. Added a "P3.7 — Zero-loss soak (harness)" + reproduce section to `docs/BENCHMARKS.md` (results left **pending** a measured run).
+- **Verified:** `bash -n` clean, executable. **No soak run performed** — Kripa controls run timing (5-min validation vs 30-min publishable). No Go changes, so the build/test gate is unaffected.
+- **2026-08-15 validation:** ran a **2-min soak** to smoke-test the harness (rate 30/s, mix hash:50/sleep:50) → **PASS, zero loss**: 3599 submitted == 3586 completed + 13 dead-lettered, 735 retries, queues drained (135s incl. drain). Confirms `failed` == dead-lettered (terminal) so the invariant holds as written. **Full 45-min soak scheduled for 2026-08-16 (tomorrow).**
+- **Next:** tomorrow run the full **45-min soak** (steady + a chaos run), capture loadgen-ramp throughput + Grafana p50/p99, and fill the BENCHMARKS.md results table (that's P3.8).
+- **Blockers:** none — awaiting Kripa to say how long to run.
 
 ---
 
