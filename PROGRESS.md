@@ -17,9 +17,9 @@
 
 | Field | Value |
 |---|---|
-| **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) + P3.4 (blocking pickup) ✅ done; P3.3, P3.5–P3.8 todo. |
-| **Current task** | P3.3 (Prometheus + Grafana in compose) — next. `/metrics` on server `:8080` and workers `:9100`; blocking pickup (doorbell) now live. |
-| **Last updated** | 2026-08-13 |
+| **Current phase** | Phase 3 — Observability & Performance (in progress). P3.1 (slog) + P3.2 (Prometheus /metrics) + P3.4 (blocking pickup) + P3.3 (Prometheus+Grafana in compose) ✅ done; P3.5–P3.8 todo. |
+| **Current task** | P3.5 (`cmd/loadgen`) — next. Grafana (`:3001`, anon viewer) + Prometheus (`:9090`) now in compose; one committed dashboard `deploy/grafana/dashboards/taskqueue.json` (uid `taskqueue-observability`, 10 panels). |
+| **Last updated** | 2026-08-15 |
 | **Last session** | 2026-08-13 — P3.4 blocking task pickup: doorbell (`BLPOP taskqueue:ready:signal`) replaces worker sleep-polling; `dequeue.lua` byte-for-byte unchanged (at-least-once preserved). All 4 ready-producers ring a cap-guarded doorbell (`signal.lua` + inline in `promote.lua`/`reclaim.lua`). New `SignalBlock`/`SignalCap` config; explicit go-redis `PoolSize ≥ WorkerCount + headroom`. 68 tests green (+15) incl. real-Redis integration; measured p99 `enqueue_to_start` ~495 ms → ~0.86 ms at low/bursty load (`docs/BENCHMARKS.md`). |
 | **Hours spent / budget** | ~40 / ~100 |
 | **Blockers** | none |
@@ -154,7 +154,7 @@ cluster; the broker detects dead nodes and reclaims their work.
 |---|---|---|---|
 | P3.1 | ☑ Replace all `log.Printf` with `log/slog` JSON, keyed by `task_id`/`node_id`; logger injected, not global | done | Root JSON logger built in both `main`s, threaded through the Phase-0 Deps seams (`ExecutorDeps`, `reaper.Config`, `NodeConfig`, `HandlerDeps`, `NewRouter`); every constructor falls back to `slog.Default()` when nil, so existing tests were untouched. `rg '"log"' cmd internal` empty |
 | P3.2 | ☑ Prometheus `/metrics` on broker AND workers: `tasks_processed_total{type,status}`, `task_duration_seconds` histogram, `queue_depth`, `enqueue_to_start_seconds` histogram, `reaper_reclaims_total` | done | New `internal/telemetry/` on a dedicated (non-global) registry; `queue_depth` is a scrape-time collector via `QueuePeekStore`. Server serves `/metrics` on `:8080`; worker got a minimal HTTP server on `METRICS_PORT` (default `:9100`). `enqueue_to_start_seconds` sourced from `Task.CreatedAt` (overcounts delayed/retried — precise `ReadyAt` deferred). Verified live |
-| P3.3 | ☐ Prometheus + Grafana in compose; ONE committed dashboard JSON in `deploy/grafana/` | todo | Timebox Grafana to one good dashboard |
+| P3.3 | ☑ Prometheus + Grafana in compose; ONE committed dashboard JSON in `deploy/grafana/` | done | `prometheus` (`:9090`) + `grafana` (`:3001`, anon Viewer, admin/admin) services; auto-provisioned datasource (uid `prometheus`) + file-provider dashboard `taskqueue.json` (uid `taskqueue-observability`, 10 panels). Worker replicas discovered via Docker **DNS SD** (`worker`:9100) so `--scale`/kill-node auto-updates targets. Verified live: 5 targets up, all 10 panels render (0 errors/0 no-data), kill-worker → reclaims 0→5 + p99 dip/recover on the graph |
 | P3.4 | ☑ Replace worker sleep-polling with blocking pickup (timeout = shutdown-check interval); measure & record the latency improvement | done | **Doorbell, not literal `BZPOPMIN`** (see Decision Log + Known Gotchas). Idle workers `BLPOP taskqueue:ready:signal <SignalBlock>` instead of `time.Sleep`; `dequeue.lua` unchanged so at-least-once + priority hold. All 4 ready-producers push one cap-guarded token: `PriorityQueue.Enqueue` (Go `signal.lua`), `promote.lua` + `reclaim.lua` `"reclaimed"` branch (inline). New `SignalBlock` (1s; = block = shutdown-check = fallback-poll) + `SignalCap` (1024) config; explicit `PoolSize ≥ WorkerCount + headroom`. Measured ~495 ms → ~0.86 ms p99 at low/bursty load (`docs/BENCHMARKS.md`) |
 | P3.5 | ☐ `cmd/loadgen`: configurable rate, duration, task-type mix | todo | Hand-rolled, no k6 |
 | P3.6 | ☐ Backpressure: max queue depth → `429` + `Retry-After` on submit | todo | |
@@ -163,8 +163,8 @@ cluster; the broker detects dead nodes and reclaims their work.
 
 **Acceptance criteria:**
 
-- [ ] Grafana shows live p50/p99 enqueue-to-start latency under a loadgen ramp (100 → 2000 tasks/sec)
-- [ ] Killing a worker mid-run produces a visible p99 spike + recovery on the graph
+- [~] Grafana shows live p50/p99 enqueue-to-start latency — dashboard live + verified rendering real data; formal loadgen ramp (100→2000/s) awaits P3.5 (`cmd/loadgen`)
+- [x] Killing a worker mid-run produces a visible p99 spike + recovery on the graph — verified: `docker kill` a worker → reaper reclaims 0→5, enqueue-to-start p99 dips then recovers, active workers 3→2 live on the dashboard
 - [ ] BENCHMARKS.md has honest numbers with machine specs and caveats
 
 **Demo (record it):** loadgen ramp on Grafana; kill a worker mid-run; p99 spikes and recovers.
@@ -226,6 +226,7 @@ cluster; the broker detects dead nodes and reclaims their work.
 | 2026-08-13 | **P3.4 resolved via a doorbell wake-up signal, NOT literal `BZPOPMIN taskqueue:ready`** | `BZPOPMIN` on the ready ZSET would pop the task ID into worker memory and only *then* write it to `processing` in a second round trip — a `kill -9` in that gap loses the task (it's in neither set), reintroducing the exact crash-loss window P1.2 closed. Instead `dequeue.lua` stays byte-for-byte unchanged (atomic `ZPOPMIN → processing`) and idle workers `BLPOP` a pure notification list `taskqueue:ready:signal`; producers ring it. Tokens carry no task identity and are never read for correctness — a lost token costs ≤ `SignalBlock` latency, never a task. Priority ordering also preserved (`ZPOPMIN` still picks, regardless of FIFO token order) |
 | 2026-08-13 | Doorbell push is **cap-guarded** (`LLEN < SignalCap` before `RPUSH`) and shared as `signal.lua`, inlined into `promote.lua`/`reclaim.lua` | Bounds the signal list from growing to queue depth when all workers are busy; any token beyond the number of blocked workers is redundant (the busy worker re-claims via try-then-block, and the fallback poll re-claims regardless). One embedded script keeps the cap logic in exactly one place for the Go path; Lua can't `//go:embed`-compose so the two batch scripts inline the same two lines |
 | 2026-08-13 | Graceful shutdown relies on the **bounded `SignalBlock` block returning**, not on ctx interrupting an in-flight `BLPOP` | Verified against real Redis: go-redis does **not** abort a `BLPOP` already in flight when its context is cancelled (it runs to the timeout); a call issued with an *already-cancelled* ctx returns `context.Canceled`. So a worker exits within ≤ `SignalBlock` (1s) of cancellation — well inside the 5s drain / 10s HTTP-shutdown budgets. Also learned: go-redis floors sub-second `BLPOP` timeouts at 1s, so `SignalBlock=1s` is the practical minimum |
+| 2026-08-15 | **P3.3: worker replicas scraped via Docker DNS SD**, not static targets; Grafana on `:3001` (frontend owns `:3000`), Prometheus `:9090`; anonymous **Viewer** access on | Scaled workers have no stable hostname — an A-record lookup of the compose service name `worker` returns one record per replica, so Prometheus auto-discovers/drops them on `--scale`/kill (keeps the kill-node demo working). Anon viewer opens the demo dashboard with no login (admin/admin still valid). **No Go code changed** — P3.2 already exposed every metric; P3.3 is pure ops/config |
 
 ---
 
@@ -271,6 +272,15 @@ cluster; the broker detects dead nodes and reclaims their work.
 - **Next:** finish P1.3 tests, then start P1.4
 - **Blockers:** none
 ```
+
+---
+
+### 2026-08-15 — Phase 3 P3.3 Prometheus + Grafana in compose (~2h)
+- **Done:** Added `prometheus` + `grafana` to `docker-compose.yml` and a committed `deploy/` tree — pure ops/config, **no Go changes** (P3.2 already exposes all metrics). `deploy/prometheus/prometheus.yml`: 5s scrape, `taskqueue-server` static (`backend:8080`), `taskqueue-workers` via **`dns_sd_configs`** on the compose service name `worker` (type A, port 9100, 10s refresh) so every scaled replica is auto-discovered/dropped, plus a self-scrape. Grafana auto-provisioned: `deploy/grafana/provisioning/datasources/prometheus.yml` (uid `prometheus`, `http://prometheus:9090`, default) + `.../dashboards/provider.yml` (file provider) + the one committed dashboard `deploy/grafana/dashboards/taskqueue.json` (uid `taskqueue-observability`, 10 panels: active workers / completed / failed / reclaims stats; enqueue→start p50/p99; throughput by status; queue depth; task-duration p99 by type; reclaims/s; retries/s). Compose: `prometheus` host `:9090` (`--web.enable-lifecycle`, `prometheus-data` vol), `grafana` host `:3001` (anon **Viewer** on, admin/admin, provisioning + dashboards + `grafana-data` mounted). `docker compose config` valid.
+- **Verified (live, real Docker cluster + 3 workers):** brought the stack up (`--scale worker=3`), submitted 300 mixed + 800 sleep tasks. Prometheus `/api/v1/targets` = **5 targets all up** (server + 3 workers via DNS SD + self). Instant queries return real data (`tasks_processed_total` by status completed/retried/failed; `queue_depth`; enqueue-to-start p99; active workers). Grafana `/api/health` ok, datasource + dashboard provisioned, datasource-proxy query returns series. **Playwright screenshot** (scratchpad, anon kiosk): all **10 panels rendered, 0 panel errors, 0 "No data", 0 console errors**. **Kill-node demo:** `docker kill` a worker mid-burst → `reaper_reclaims_total` 0→5, reclaims/s spike, enqueue-to-start p99 dips then recovers, active workers 3→2, dead-node tombstone on `/api/nodes` — the money graph works. Restored to 3 workers after.
+- **Learned/decided:** compose service DNS returns one A record per replica → `dns_sd_configs` is the clean way to scrape a scaled service (no hardcoded replicas; survives kill-node). Grafana on `:3001` (frontend squats `:3000`). Anon Viewer = zero-friction demo. See Decision Log (2026-08-15). Stack left running for preview; `docker compose down` (or `down -v` to drop Prom/Grafana volumes) to stop.
+- **Next:** P3.5 (`cmd/loadgen`: configurable rate/duration/type-mix) to drive the 100→2000/s ramp the first acceptance criterion wants, then P3.6 backpressure and the P3.7 soak → P3.8 BENCHMARKS.
+- **Blockers:** none.
 
 ---
 
