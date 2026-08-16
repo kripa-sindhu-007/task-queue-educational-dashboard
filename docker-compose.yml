@@ -11,8 +11,11 @@ services:
       timeout: 3s
       retries: 5
 
-  # backend = API + delayed scheduler + reaper only. RUN_WORKERS=false so task
-  # execution is handled by the scalable `worker` service below.
+  # backend = API only. LEADER_ELIGIBLE=false so it never runs the singleton
+  # scheduler/reaper loops (those live on the leader `scheduler` node, below) —
+  # it just serves the HTTP API and stays up during a leader failover, so the
+  # dashboard never blinks. RUN_WORKERS=false: task execution is the `worker`
+  # service. It still registers as a presence node (role=server) via heartbeat.
   backend:
     image: kripa007/taskqueue-backend:latest
     build: ./backend
@@ -22,13 +25,38 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - RUN_WORKERS=false
-      - REAPER_INTERVAL_MS=5000
+      - LEADER_ELIGIBLE=false
+      - HEARTBEAT_INTERVAL_MS=3000
       - HEARTBEAT_TTL_MS=10000
       # P3.6 backpressure: shed submits with 429 + Retry-After once the ready
       # queue reaches MAX_QUEUE_DEPTH (0 disables). Tuned high so normal use is
       # unaffected but a large loadgen ramp trips it.
       - MAX_QUEUE_DEPTH=20000
       - RETRY_AFTER_SECONDS=2
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # scheduler = leader-eligible node that runs the delayed scheduler + reaper.
+  # Only the elected leader runs those loops; the rest stand by. Leadership is a
+  # Redis lease (SET taskqueue:leader NX PX), renewed at TTL/3, released on exit.
+  # Default: 1 replica (the sole leader). Demo failover with:
+  #   docker compose up --scale scheduler=2 --scale worker=3
+  # then kill the crowned replica and watch the crown migrate in < LEADER_TTL_MS
+  # while the API (backend) stays up. No published ports — reached via Redis only.
+  scheduler:
+    image: kripa007/taskqueue-backend:latest
+    build: ./backend
+    command: ["/server"]
+    environment:
+      - REDIS_ADDR=redis:6379
+      - RUN_WORKERS=false
+      - LEADER_ELIGIBLE=true
+      - LEADER_TTL_MS=10000
+      - REAPER_INTERVAL_MS=5000
+      - HEARTBEAT_INTERVAL_MS=3000
+      - HEARTBEAT_TTL_MS=10000
     depends_on:
       redis:
         condition: service_healthy

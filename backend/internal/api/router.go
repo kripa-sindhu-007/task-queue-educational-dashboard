@@ -25,6 +25,7 @@ func NewRouter(h *Handler, logger *slog.Logger, metrics http.Handler) http.Handl
 	mux.HandleFunc("GET /api/events/cluster", h.GetClusterEvents)
 	mux.HandleFunc("GET /api/workers", h.GetWorkers)
 	mux.HandleFunc("GET /api/nodes", h.GetNodes)
+	mux.HandleFunc("GET /api/leader", h.GetLeader)
 	mux.HandleFunc("GET /api/queues", h.GetQueues)
 	mux.HandleFunc("GET /api/metrics/enhanced", h.GetEnhancedMetrics)
 	mux.HandleFunc("DELETE /api/flush", h.FlushData)

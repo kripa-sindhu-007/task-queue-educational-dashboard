@@ -64,7 +64,8 @@ type WorkerState struct {
 type Node struct {
 	ID        string    `json:"id"`
 	Hostname  string    `json:"hostname"`
-	Capacity  int       `json:"capacity"` // number of executor goroutines
+	Role      string    `json:"role,omitempty"` // "worker" (executes tasks) or "server" (presence-only scheduler/API, capacity 0); P4.1
+	Capacity  int       `json:"capacity"`       // number of executor goroutines
 	StartedAt time.Time `json:"started_at"`
 	// Runtime fields, populated by NodeStore.ListNodes (not stored in the record):
 	Alive         bool  `json:"alive"`

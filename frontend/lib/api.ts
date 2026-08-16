@@ -6,6 +6,7 @@ import {
   TaskEvent,
   WorkerState,
   Node,
+  LeaderInfo,
   QueueSnapshot,
   EnhancedMetrics,
 } from "./types";
@@ -64,6 +65,18 @@ export async function getNodes(): Promise<Node[]> {
   const res = await fetch(`${API_BASE}/api/nodes`);
   if (!res.ok) throw new Error("Failed to fetch nodes");
   return res.json();
+}
+
+// P4 leader election. Tolerant: returns an empty leader rather than throwing, so
+// the cluster panel keeps rendering if the endpoint is unavailable.
+export async function getLeader(): Promise<LeaderInfo> {
+  try {
+    const res = await fetch(`${API_BASE}/api/leader`);
+    if (!res.ok) return { leader_id: "", is_self: false };
+    return res.json();
+  } catch {
+    return { leader_id: "", is_self: false };
+  }
 }
 
 export async function getQueues(): Promise<QueueSnapshot> {

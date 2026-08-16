@@ -39,6 +39,12 @@ type Config struct {
 	MaxQueueDepth     int // ready-queue depth at/above which new submits are rejected; 0 = disabled
 	RetryAfterSeconds int // value for the Retry-After header on a 429
 
+	// Phase 4: leader election (P4.1). Exactly one leader-eligible node holds the
+	// Redis lease at a time and runs the singleton loops (delayed scheduler +
+	// reaper). LeaderEligible=false makes a pure API node that never competes.
+	LeaderEligible bool          // whether this node competes for leadership and runs the singleton loops
+	LeaderTTL      time.Duration // leader lease TTL; renew interval derives as TTL/3
+
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
@@ -71,6 +77,9 @@ func Load() (*Config, error) {
 
 		MaxQueueDepth:     getEnvInt("MAX_QUEUE_DEPTH", 0),     // 0 = backpressure disabled
 		RetryAfterSeconds: getEnvInt("RETRY_AFTER_SECONDS", 5), // Retry-After header on a 429
+
+		LeaderEligible: getEnvBool("LEADER_ELIGIBLE", true),  // compete for leadership by default (single-binary wins trivially)
+		LeaderTTL:      getEnvMillis("LEADER_TTL_MS", 10000), // 10s lease; renewed every ~3.3s (TTL/3)
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),
@@ -129,6 +138,9 @@ func (c *Config) validate() error {
 	}
 	if c.RetryAfterSeconds <= 0 {
 		return fmt.Errorf("config: RETRY_AFTER_SECONDS must be > 0, got %d", c.RetryAfterSeconds)
+	}
+	if c.LeaderTTL <= 0 {
+		return fmt.Errorf("config: LEADER_TTL_MS must be > 0")
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/election"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/store"
@@ -34,6 +35,10 @@ type HandlerDeps struct {
 	Tasks       *store.TaskStore
 	Nodes       *store.NodeStore
 	Telemetry   *telemetry.Metrics // nil is a safe no-op
+
+	// NodeID identifies this process for the leader crown (P4.1): GET /api/leader
+	// reports is_self by comparing the lease holder against this ID.
+	NodeID string
 
 	// Backpressure (P3.6). When MaxQueueDepth > 0, SubmitTask sheds new work with
 	// HTTP 429 + Retry-After once the ready queue reaches MaxQueueDepth.
@@ -281,6 +286,21 @@ func (h *Handler) GetNodes(w http.ResponseWriter, r *http.Request) {
 		nodes = []model.Node{}
 	}
 	writeJSON(w, http.StatusOK, nodes)
+}
+
+// GetLeader returns the current leader-election lease holder (P4.1) so the
+// dashboard can crown it. leader_id is the node ID currently holding the lease
+// (empty when none is held); is_self is true when that node is this process.
+func (h *Handler) GetLeader(w http.ResponseWriter, r *http.Request) {
+	leaderID, err := election.ReadLeader(r.Context(), h.deps.Redis)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"leader_id": leaderID,
+		"is_self":   leaderID != "" && leaderID == h.deps.NodeID,
+	})
 }
 
 func (h *Handler) GetQueues(w http.ResponseWriter, r *http.Request) {

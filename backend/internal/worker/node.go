@@ -12,12 +12,16 @@ import (
 
 // NodeConfig wires a Node's collaborators and timing.
 type NodeConfig struct {
-	Nodes             *store.NodeStore
+	Nodes *store.NodeStore
+	// Pool executes tasks. A nil Pool makes a presence-only node (role "server"):
+	// it registers, heartbeats and appears in /api/nodes for the leader crown, but
+	// never starts the executor loop (P4.1 scheduler replicas run capacity 0).
 	Pool              *Pool
 	Events            *store.EventStore // optional: emits node_joined on successful registration
 	NodeID            string
 	Hostname          string
-	Capacity          int           // executor goroutines (== pool worker count)
+	Role              string        // "worker" or "server"; defaults to "worker" when empty
+	Capacity          int           // executor goroutines (== pool worker count; 0 for a presence-only node)
 	HeartbeatInterval time.Duration // how often to refresh the heartbeat key
 	Logger            *slog.Logger  // optional: nil falls back to slog.Default()
 }
@@ -42,9 +46,14 @@ func NewNode(cfg NodeConfig) *Node {
 // Run registers the node, starts the heartbeat loop and worker pool, and blocks
 // until ctx is cancelled and in-flight work has drained. It then deregisters.
 func (n *Node) Run(ctx context.Context) {
+	role := n.cfg.Role
+	if role == "" {
+		role = "worker"
+	}
 	node := model.Node{
 		ID:        n.cfg.NodeID,
 		Hostname:  n.cfg.Hostname,
+		Role:      role,
 		Capacity:  n.cfg.Capacity,
 		StartedAt: time.Now(),
 	}
@@ -72,9 +81,15 @@ func (n *Node) Run(ctx context.Context) {
 		n.heartbeatLoop(ctx, node)
 	}()
 
-	// Start executors and block until they drain after ctx cancellation.
-	n.cfg.Pool.Start(ctx)
-	n.cfg.Pool.Wait()
+	// Start executors and block until they drain after ctx cancellation. A
+	// presence-only node (nil Pool) has no executors: it just holds its heartbeat
+	// alive until ctx is cancelled, then deregisters like any other node.
+	if n.cfg.Pool != nil {
+		n.cfg.Pool.Start(ctx)
+		n.cfg.Pool.Wait()
+	} else {
+		<-ctx.Done()
+	}
 
 	// Wait for the heartbeat loop to observe cancellation before deregistering,
 	// so it can't re-create the heartbeat key after we delete it.

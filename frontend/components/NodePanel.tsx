@@ -4,9 +4,9 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { usePolling } from "@/lib/hooks";
-import { getNodes } from "@/lib/api";
+import { getNodes, getLeader } from "@/lib/api";
 import { Node } from "@/lib/types";
-import { Server, ServerOff } from "lucide-react";
+import { Server, ServerOff, Crown } from "lucide-react";
 
 const MAX_DOTS = 12;
 
@@ -48,7 +48,7 @@ function WorkerSlots({ capacity, inFlight }: { capacity: number; inFlight: numbe
   );
 }
 
-function NodeCard({ node }: { node: Node }) {
+function NodeCard({ node, isLeader }: { node: Node; isLeader: boolean }) {
   const alive = node.alive;
   const reduce = useReducedMotion();
   return (
@@ -59,7 +59,9 @@ function NodeCard({ node }: { node: Node }) {
       exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.9 }}
       transition={{ duration: 0.2 }}
       className={`rounded-lg border p-3.5 ${
-        alive
+        isLeader && alive
+          ? "border-amber-400/50 bg-amber-400/5 ring-1 ring-amber-400/30"
+          : alive
           ? "border-state-succeeded/25 bg-state-succeeded/5"
           : "border-state-dead/25 bg-state-dead/5 opacity-70"
       }`}
@@ -80,18 +82,30 @@ function NodeCard({ node }: { node: Node }) {
             {node.hostname || node.id}
           </span>
         </div>
-        {alive ? (
-          <Badge variant="success" className="shrink-0 text-[10px]">
-            alive
-          </Badge>
-        ) : (
-          <Badge
-            variant="outline"
-            className="shrink-0 border-state-dead/25 bg-state-dead/15 text-[10px] text-state-dead"
-          >
-            dead
-          </Badge>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isLeader && alive && (
+            <Badge
+              variant="outline"
+              className="shrink-0 gap-1 border-amber-400/40 bg-amber-400/15 text-[10px] font-semibold text-amber-300"
+              title="Elected leader — runs the delayed scheduler + reaper"
+            >
+              <Crown className="h-3 w-3" aria-hidden="true" />
+              leader
+            </Badge>
+          )}
+          {alive ? (
+            <Badge variant="success" className="shrink-0 text-[10px]">
+              alive
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-state-dead/25 bg-state-dead/15 text-[10px] text-state-dead"
+            >
+              dead
+            </Badge>
+          )}
+        </div>
       </div>
 
       {alive ? (
@@ -122,6 +136,8 @@ function NodeCard({ node }: { node: Node }) {
 
 export default function NodePanel() {
   const { data: nodes } = usePolling(getNodes, 1000);
+  const { data: leader } = usePolling(getLeader, 1000);
+  const leaderId = leader?.leader_id ?? "";
 
   // Sort alive-first, then by ID for stable ordering.
   const sorted = [...(nodes ?? [])].sort((a, b) => {
@@ -163,7 +179,7 @@ export default function NodePanel() {
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4">
             <AnimatePresence mode="popLayout">
               {sorted.map((n) => (
-                <NodeCard key={n.id} node={n} />
+                <NodeCard key={n.id} node={n} isLeader={!!leaderId && n.id === leaderId} />
               ))}
             </AnimatePresence>
           </div>
