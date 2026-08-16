@@ -1,4 +1,4 @@
-.PHONY: build test test-integration bench vet fmt tidy run loadgen
+.PHONY: build test test-integration bench vet fmt tidy run loadgen chaos
 
 build:
 	go build ./...
@@ -31,3 +31,9 @@ run:
 #   make loadgen ARGS="-ramp 100:2000 -duration 90s"
 loadgen:
 	go run ./cmd/loadgen $(ARGS)
+
+# Chaos harness (P4.5). Random worker + scheduler kills under load with a cron
+# job running, then asserts zero-loss + cron integrity from Redis ground truth.
+# Config via env, e.g.:  make chaos CHAOS_DURATION=10m CHAOS_INTERVAL=15
+chaos:
+	cd .. && ./scripts/chaos.sh

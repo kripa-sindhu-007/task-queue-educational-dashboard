@@ -243,48 +243,110 @@ already exists, the submission is rejected (409 Conflict). This prevents duplica
 submissions from network retries. Consumer-side idempotency (ensuring processing
 the same task twice is harmless) is left to the application.
 
-## Target architecture _(planned — Phases 3–4)_
+## Coordination: leader election, cron & split-brain (Phase 4)
 
-- **Phase 3 — observability & performance.** `slog` structured logs, Prometheus
-  metrics on broker and workers, Grafana dashboards, blocking `BZPOPMIN` dequeue,
-  loadgen and honest benchmarks.
-- **Phase 4 — coordination.** Redis-lease leader election gates the scheduler,
-  reaper and cron; multiple broker replicas coordinate safely.
+The scheduler (promotes delayed tasks) and the reaper (reclaims expired leases) are
+**singletons** — running two copies means double-promotion and double-reclaim. Phase 4
+makes it safe to run more than one scheduler replica by electing exactly one **leader**
+that owns those loops.
 
-Still open from Phase 2 (deferred, not blocked): a `GET /api/nodes` endpoint and the
-dashboard node panel (P2.7), the docker-compose worker-service split (P2.5), and a
-testcontainers kill-a-worker integration test (P2.8). All need a Docker or frontend
-environment to build and verify.
+### Leader election (Redis lease)
+
+Leadership is a **Redis lease**, not Raft — deliberately, because a lease is a dozen
+lines and teaches the real tradeoff honestly:
+
+- Acquire: `SET taskqueue:leader {nodeID} NX PX 10000` (`LEADER_TTL_MS`). `NX` makes it
+  a compare-and-set: only one node wins.
+- Renew: every `TTL/3`, an **owner-only CAS** in `renew.lua` (`if GET == me then PEXPIRE`)
+  extends the lease. On *any* renew error the node **steps down immediately** — we prefer
+  **zero leaders** (loops paused, safe) over **two** (loops racing).
+- Release: on graceful shutdown, an owner-only CAS in `release.lua` deletes the key so a
+  standby takes over **instantly** instead of waiting out the TTL.
+
+`election.Elector.RunWhenLeader(ctx, fn)` runs `fn` under a **leader-scoped context that
+is cancelled the instant leadership is lost**, so the scheduler + reaper + cron loops stop
+the moment the lease lapses. A node with `LEADER_ELIGIBLE=false` never competes — that is
+how the compose topology runs an **API-only `backend`** (always serving `:8080`) alongside
+leader-eligible **`scheduler`** replicas that run the loops only when crowned.
+
+### Cron (leader-materialized, idempotent)
+
+Cron jobs (`taskqueue:cron` hash) are materialized **only by the leader**. Each tick the
+leader computes each job's latest due slot and enqueues a task with the **deterministic
+ID `{cronID}-{scheduledTs}`** on the normal enqueue path — so a cron instance is an
+ordinary task (retries, leases, dead-letters, appears in the Activity Log). Before
+enqueuing it runs the *same* `TaskStore.Exists` idempotency check the submit handler uses
+(see [The idempotency key pattern](#the-idempotency-key-pattern)): if a leader fires slot
+`ts` and crashes before recording progress, the next leader recomputes the identical ID,
+`Exists` is true, and it **skips** — no duplicate fire. Missed slots after downtime
+collapse into a single "run it now" (skip-to-latest).
+
+### Split-brain — the honest part
+
+A lease is not a fence. During a handover there is a window of up to ~`LEADER_TTL_MS`
+where the old leader has lost its lease but hasn't noticed yet, while a new leader has
+acquired — **two nodes may briefly run the scheduler + reaper + cron**. This does **not**
+corrupt state, because every conflicting operation is already idempotent or atomic:
+
+- **Promotion** (`promote.lua`) moves a task out of `delayed` with an atomic ZREM-guard —
+  two leaders promoting the same task yields one winner, one no-op.
+- **Reclaim** (`reclaim.lua`) has explicit `lost_race` handling; a task can't be reclaimed
+  twice.
+- **Cron** dedups on the `{cronID}-{ts}` record via `Exists`, and `Enqueue` is a `ZADD`
+  by member (set semantics), so a concurrent double-fire collapses to one ready entry.
+
+What a lease **cannot** prevent without **fencing tokens** is a *slow* (not dead) old
+leader whose write lands after the new leader has taken over. In this system the blast
+radius is one duplicated *at-least-once processing* — which the delivery contract already
+permits and idempotent consumers already tolerate — not lost or corrupted work. Choosing
+a lease over Raft is a conscious tradeoff: ~10 s worst-case failover and a bounded, benign
+overlap window, in exchange for radically less machinery. If you needed strict
+single-writer semantics, you'd add fencing tokens (a monotonic epoch checked on every
+write) or move to Raft — noted here so the limitation is explicit, not hidden.
+
+> One narrow window worth naming: cron persists the task record *before* enqueuing, so a
+> crash *between* those two steps leaves a record that exists but was never queued → the
+> next leader skips it → that single slot is lost. This is the same sub-second
+> at-least-once window the submit path has; we document it rather than add a distributed
+> transaction for one cron tick.
+
+### Verified by chaos
+
+`scripts/chaos.sh` (`make chaos`) exercises all of this at once: it repeatedly kills random
+workers (→ reaper reclaim) **and** schedulers (→ leader failover) under sustained load with
+a cron job running, then asserts from Redis ground truth that `submitted == processed +
+failed` (zero loss), cron kept firing, and the queues drained.
 
 ```mermaid
 flowchart LR
-    subgraph brokers [Broker replicas]
-        API2[API + scheduler + reaper<br/>leader-gated]
+    UI[Next.js UI] --> API[backend :8080<br/>API only · LEADER_ELIGIBLE=false]
+    subgraph sched [scheduler replicas · leader-eligible]
+        S1[scheduler 1]
+        S2[scheduler 2]
     end
     subgraph workers [Standalone worker nodes]
-        W1[worker node 1]
-        W2[worker node 2]
-        WN[worker node N]
+        W1[worker 1]
+        WN[worker N]
     end
     subgraph redis2 [Redis]
-        READY2[(ready)]
-        PROC[(processing ZSET<br/>leased, by deadline)]
-        NODES[(node:uuid TTL keys<br/>heartbeats)]
-        LEADER[(leader lease)]
-    end
-    subgraph obs [Observability]
-        PROM[Prometheus]
-        GRAF[Grafana]
+        READY2[(ready / delayed / processing)]
+        NODES[(node TTL keys · heartbeats)]
+        CRON[(taskqueue:cron)]
+        LEADER[(taskqueue:leader lease)]
     end
 
-    API2 -->|lease claim| READY2
-    W1 & W2 & WN -->|Lua lease dequeue| READY2 --> PROC
-    W1 & W2 & WN -->|Ack / heartbeat| PROC
-    W1 & W2 & WN --> NODES
-    API2 -->|reap expired leases / dead nodes| PROC
-    API2 --> LEADER
-    API2 & W1 & W2 & WN --> PROM --> GRAF
+    S1 -. "compete for" .-> LEADER
+    S2 -. "compete for" .-> LEADER
+    S1 -->|leader only: promote · reap · materialize cron| READY2
+    S1 --> CRON
+    W1 & WN -->|Lua lease dequeue / ack| READY2
+    W1 & WN --> NODES
+    API --> READY2
+    API -->|GET /api/leader| LEADER
 ```
+
+_Phase 3 (observability & performance — slog, Prometheus/Grafana, doorbell pickup,
+loadgen, backpressure, benchmarks) shipped earlier; see `docs/BENCHMARKS.md`._
 
 ## API endpoints
 
