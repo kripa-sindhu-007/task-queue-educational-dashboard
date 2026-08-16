@@ -21,6 +21,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/api"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/config"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/election"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/handler"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/reaper"
@@ -100,6 +101,7 @@ func main() {
 		Tasks:       taskStore,
 		Nodes:       nodeStore,
 		Telemetry:   metrics,
+		NodeID:      nodeID,
 
 		MaxQueueDepth:     cfg.MaxQueueDepth,
 		RetryAfterSeconds: cfg.RetryAfterSeconds,
@@ -120,10 +122,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start delayed scheduler
-	go delayedScheduler.Start(ctx)
-
-	// Start reaper (reclaims expired leases and dead nodes' in-flight work)
+	// Reaper (reclaims expired leases and dead nodes' in-flight work). Constructed
+	// here but only started under leadership (see RunWhenLeader below).
 	taskReaper := reaper.New(redisClient, taskStore, deadLetterStore, eventStore, metricsStore, nodeStore, reaper.Config{
 		Interval:        cfg.ReaperInterval,
 		BatchSize:       100,
@@ -132,30 +132,65 @@ func main() {
 		Logger:          logger,
 		Metrics:         metrics,
 	})
-	go taskReaper.Start(ctx)
 
-	// Start in-process worker node when enabled (single-binary/dev mode).
-	var nodeDone chan struct{}
+	// Leader election (P4.1). The delayed scheduler and reaper are singletons: only
+	// the leader runs them, bound to a leader-scoped context so they stop the
+	// instant this node loses the lease and restart when it re-acquires. A
+	// leader-ineligible node (LEADER_ELIGIBLE=false) parks in RunWhenLeader without
+	// ever competing — it serves the API only. Single-binary dev keeps working:
+	// the lone eligible node wins the lease-of-one immediately and runs both loops.
+	elector := election.New(redisClient, nodeID, election.Config{
+		TTL:      cfg.LeaderTTL,
+		Eligible: cfg.LeaderEligible,
+		Logger:   logger,
+	})
+	go func() {
+		elector.RunWhenLeader(ctx, func(leaderCtx context.Context) {
+			logger.Info("leadership acquired — starting delayed scheduler + reaper", "node_id", nodeID)
+			go delayedScheduler.Start(leaderCtx)
+			go taskReaper.Start(leaderCtx)
+		})
+	}()
+
+	// Cluster presence. In single-binary/dev mode (RUN_WORKERS=true) this process
+	// runs the worker pool and registers as a "worker". Otherwise it registers as a
+	// presence-only "server" node (capacity 0, no pool) so scheduler/API replicas
+	// still appear in /api/nodes and can wear the leader crown, without starting the
+	// worker execution path.
+	var nodeCfg worker.NodeConfig
 	if cfg.RunWorkers {
-		node := worker.NewNode(worker.NodeConfig{
+		nodeCfg = worker.NodeConfig{
 			Nodes:             nodeStore,
 			Pool:              pool,
 			Events:            eventStore,
 			NodeID:            nodeID,
 			Hostname:          worker.Hostname(),
+			Role:              "worker",
 			Capacity:          cfg.WorkerCount,
 			HeartbeatInterval: cfg.HeartbeatInterval,
 			Logger:            logger,
-		})
-		nodeDone = make(chan struct{})
-		go func() {
-			defer close(nodeDone)
-			node.Run(ctx) // blocks: register -> heartbeat + pool -> drain -> deregister
-		}()
+		}
 		logger.Info("in-process worker node enabled", "workers", cfg.WorkerCount)
 	} else {
-		logger.Info("RUN_WORKERS=false — server runs API + scheduler + reaper only")
+		nodeCfg = worker.NodeConfig{
+			Nodes:             nodeStore,
+			Pool:              nil, // presence-only: no executor loop
+			Events:            eventStore,
+			NodeID:            nodeID,
+			Hostname:          worker.Hostname(),
+			Role:              "server",
+			Capacity:          0,
+			HeartbeatInterval: cfg.HeartbeatInterval,
+			Logger:            logger,
+		}
+		logger.Info("RUN_WORKERS=false — registered as presence-only server node (API + scheduler + reaper when leader)")
 	}
+	node := worker.NewNode(nodeCfg)
+	nodeDone := make(chan struct{})
+	go func() {
+		defer close(nodeDone)
+		node.Run(ctx) // blocks: register -> heartbeat (+ pool) -> drain -> deregister
+	}()
 
 	// Start HTTP server
 	go func() {

@@ -1,9 +1,16 @@
-# Prometheus scrape config for the task-queue platform (P3.3).
+# Prometheus scrape config for the task-queue platform (P3.3, updated P4.3).
 #
-# Two application jobs plus a self-scrape:
-#   * taskqueue-server  — the API/scheduler/reaper binary. Owns queue_depth and
-#     reaper_reclaims_total. Single, stable target (compose service `backend`).
-#   * taskqueue-workers — the standalone worker replicas. Own tasks_processed_total,
+# Three application jobs plus a self-scrape:
+#   * taskqueue-server    — the API node (compose service `backend`). Single,
+#     stable target. Owns queue_depth (scrape-time ZCARD, computed by any /server)
+#     and tasks_rejected_total (backpressure on submit).
+#   * taskqueue-scheduler — the leader-eligible scheduler replicas (P4). The reaper
+#     runs only on the elected leader, so reaper_reclaims_total lives here. Scaled
+#     with `--scale scheduler=N` and discovered via Docker DNS (like workers), so a
+#     killed leader drops out and the new leader's series appears. We KEEP only
+#     reaper_reclaims_total from this job — queue_depth is owned by taskqueue-server
+#     above, so scraping the same scrape-time gauge here would double-count.
+#   * taskqueue-workers   — the standalone worker replicas. Own tasks_processed_total,
 #     task_duration_seconds and enqueue_to_start_seconds. Scaled with
 #     `docker compose up --scale worker=N`, so they have NO fixed hostname; we
 #     discover them via Docker's embedded DNS. An A-record lookup of the service
@@ -20,6 +27,25 @@ scrape_configs:
       - targets: ["backend:8080"]
         labels:
           role: server
+
+  - job_name: taskqueue-scheduler
+    dns_sd_configs:
+      - names: ["scheduler"]
+        type: A
+        port: 8080
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - target_label: role
+        replacement: scheduler
+    metric_relabel_configs:
+      # Only the leader's reaper metric is meaningful here; queue_depth is owned by
+      # the taskqueue-server job, so drop everything except reaper_reclaims_total to
+      # avoid double-counting the scrape-time gauges every /server also exposes.
+      - source_labels: [__name__]
+        regex: reaper_reclaims_total
+        action: keep
 
   - job_name: taskqueue-workers
     dns_sd_configs:

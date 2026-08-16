@@ -17,8 +17,8 @@
 
 | Field | Value |
 |---|---|
-| **Current phase** | Phase 3 — Observability & Performance ✅ **COMPLETE**. P3.1 (slog) + P3.2 (Prometheus /metrics) + P3.4 (blocking pickup) + P3.3 (Prometheus+Grafana) + P3.5 (loadgen) + P3.6 (backpressure) + **P3.7 (zero-loss soak)** + **P3.8 (BENCHMARKS.md)** all done. Next: **Phase 4** (leader election, cron). |
-| **Current task** | Phase 3 closed out 2026-08-16 — **3 soaks all zero-loss** (steady 40/s·20m, chaos 40/s·8m kill+restore reclaims 9, sustained-overload 250/s·45m 542,613 shed by backpressure); throughput measured (hash ~580/s, sleep ~21/s, mix ~49/s); `docs/BENCHMARKS.md` results filled. Ready to commit + MR `feature/p3-blocking-pickup` → main. |
+| **Current phase** | **Phase 4 — Coordination** IN PROGRESS. Increment 1 (leader election) DONE: **P4.1 + P4.2 + P4.3** + the P4.6 election-failover test. Next increments: cron (P4.4), chaos (P4.5), docs (P4.7). Phase 3 ✅ complete (all P3.x). |
+| **Current task** | Phase 4 Increment 1 (leader election) BUILT + VERIFIED 2026-08-16 — Redis-lease `Elector.RunWhenLeader` gates scheduler+reaper; API-only backend + scheduler×N topology; 👑 crown on the leader in the dashboard. Quality gate green (build/vet/`test -race`); docker failover verified (graceful 0.2s, SIGKILL ~10.5s≈TTL, API up throughout). Ready to commit on `feature/p3-blocking-pickup`. |
 | **Last updated** | 2026-08-15 |
 | **Last session** | 2026-08-13 — P3.4 blocking task pickup: doorbell (`BLPOP taskqueue:ready:signal`) replaces worker sleep-polling; `dequeue.lua` byte-for-byte unchanged (at-least-once preserved). All 4 ready-producers ring a cap-guarded doorbell (`signal.lua` + inline in `promote.lua`/`reclaim.lua`). New `SignalBlock`/`SignalCap` config; explicit go-redis `PoolSize ≥ WorkerCount + headroom`. 68 tests green (+15) incl. real-Redis integration; measured p99 `enqueue_to_start` ~495 ms → ~0.86 ms at low/bursty load (`docs/BENCHMARKS.md`). |
 | **Hours spent / budget** | ~40 / ~100 |
@@ -177,12 +177,12 @@ cluster; the broker detects dead nodes and reclaims their work.
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| P4.1 | ☐ Leader election via Redis lease: `SET taskqueue:leader {nodeID} NX PX 10000`, renew at 1/3 TTL, step down on renewal failure; new `internal/election/` with `Elector{RunWhenLeader(ctx, fn)}` | todo | |
-| P4.2 | ☐ Gate scheduler + reaper + cron behind leadership; leader-scoped contexts cancelled on loss | todo | |
-| P4.3 | ☐ Run 2 broker replicas in compose; dashboard shows a crown/badge on the leader | todo | |
+| P4.1 | ☑ Leader election via Redis lease: `SET taskqueue:leader {nodeID} NX PX 10000`, renew at 1/3 TTL, step down on renewal failure; new `internal/election/` with `Elector{RunWhenLeader(ctx, fn)}` | done | `internal/election/{election.go,scripts/renew.lua,scripts/release.lua}`; owner-only CAS renew/release Lua; steps down on any renew error; graceful release on ctx cancel; `LEADER_ELIGIBLE`/`LEADER_TTL_MS` config |
+| P4.2 | ☑ Gate scheduler + reaper + cron behind leadership; leader-scoped contexts cancelled on loss | done | `cmd/server/main.go`: delayed scheduler + reaper now run inside `Elector.RunWhenLeader(ctx, …)` bound to `leaderCtx`; loops stop the instant leadership is lost. Cron will slot in here (P4.4) |
+| P4.3 | ☑ Run 2 broker replicas in compose; dashboard shows a crown/badge on the leader | done | Topology: API-only `backend` (LEADER_ELIGIBLE=false, keeps :8080) + new leader-eligible `scheduler` service (no ports), demo `--scale scheduler=2`. `GET /api/leader`; NodePanel 👑 crown badge. Prometheus scrapes `scheduler` (reaper_reclaims) via DNS SD. **Verified:** graceful failover 0.2s, SIGKILL failover ~10.5s (≈TTL), API up throughout, new leader runs the loops |
 | P4.4 | ☐ Cron jobs: `POST /api/cron` (spec + task template) stored in `taskqueue:cron`; leader materializes due instances. Use `robfig/cron` parser. Instance IDs = `{cronID}-{scheduledTs}` for failover dedup (reuses P1.6) | todo | New `internal/cron/` |
 | P4.5 | ☐ Chaos script: random worker/broker kills for 10 min → invariant check (`submitted == completed + dead_lettered`, no duplicate cron fires) | todo | `make chaos` |
-| P4.6 | ☐ Tests: election failover (leader dies → follower takes over < TTL) with miniredis; cron materialization with injected clock | todo | |
+| P4.6 | ◑ Tests: election failover (leader dies → follower takes over < TTL) with miniredis; cron materialization with injected clock | in-progress | **Election slice DONE:** `election_test.go` (-race) — failover-after-crash (miniredis `FastForward` past TTL → follower acquires, and NOT before), owner-only renew/release CAS, ineligible-never-acquires. Cron-materialization test pending (P4.4) |
 | P4.7 | ☐ Docs: "Leader election & split-brain" — honest section on the unsafety window without fencing tokens, why lease-not-Raft | todo | |
 | P4.8 | ☐ README rewrite: lead with demo GIFs (kill-a-worker, leader failover, load ramp), Mermaid diagrams, delivery-guarantees section, benchmark table, Limitations, future roadmap (Raft, Streams, DAG workflows) | todo | Non-negotiable ~8h — do NOT cut this for features |
 | P4.9 | ☐ Record 2–3 GIFs into `docs/gifs/` | todo | |
@@ -274,6 +274,18 @@ cluster; the broker detects dead nodes and reclaims their work.
 - **Next:** finish P1.3 tests, then start P1.4
 - **Blockers:** none
 ```
+
+---
+
+### 2026-08-16 — Phase 4 Increment 1: Leader Election (P4.1–P4.3 + P4.6 election slice)
+- **Design (★ approved):** `internal/election.Elector.RunWhenLeader(ctx, fn)` runs `fn` under a leader-scoped context cancelled the instant the Redis lease is lost. Lease = `SET taskqueue:leader {nodeID} NX PX 10000` (`LEADER_TTL_MS`), renewed at TTL/3 via owner-only CAS Lua (`renew.lua`), released on graceful exit via owner-only CAS (`release.lua`); step down on ANY renew error (prefer zero leaders to two). Lease is coordination, not safety — handover correctness still rests on the atomic promote/reclaim Lua + P1.6 idempotency.
+- **Gating (P4.2):** `cmd/server/main.go` now runs the delayed scheduler + reaper *inside* `RunWhenLeader`, bound to `leaderCtx`. Ineligible nodes (`LEADER_ELIGIBLE=false`) never compete and never run the loops → they're API-only.
+- **Topology (P4.3):** compose split — API-only `backend` (keeps `:8080`, always up) + new leader-eligible `scheduler` service (no ports), demo `--scale scheduler=2`. Both register as presence nodes (role=server, cap 0). `GET /api/leader` → `{leader_id, is_self}`. Frontend `NodePanel` polls it and shows a 👑 **leader** badge + amber ring on the crowned node.
+- **Observability:** reaper moved off the always-scraped backend onto the leader scheduler, so `prometheus.yml` gains a `taskqueue-scheduler` DNS-SD job **keep-filtered to `reaper_reclaims_total`** (queue_depth stays owned by the backend job — no double count).
+- **Tests (P4.6 slice):** `election_test.go` (`-race`) — failover-after-crash via miniredis `FastForward` past TTL (follower acquires, and NOT before), owner-only renew/release CAS, ineligible-never-acquires.
+- **Quality gate:** `gofmt`/`go vet`/`go build` clean, `go test ./... ` green (incl. election -race), frontend `tsc` + `next build` clean.
+- **Live failover verified (docker, 2 schedulers + 3 workers):** crown migrated scheduler-1→scheduler-2; **SIGKILL failover ~10.5s** (≈ lease TTL — can't detect a crash faster), **graceful `docker stop` failover 0.2s** (release.lua fires), **API stayed up throughout** (19/19 health OK), new leader ran the loops (delayed task promoted). Crown badge confirmed in the UI.
+- **STATE:** UNCOMMITTED on `feature/p3-blocking-pickup`: new `backend/internal/election/`, M backend {cmd/server/main.go, api/handler.go, api/router.go, config/config.go, model/task.go, store/redis.go, worker/node.go}, M docker-compose.yml, M deploy/prometheus/prometheus.yml, M frontend {NodePanel.tsx, lib/api.ts, lib/types.ts}, M PROGRESS.md. Kripa commits. **Next: P4.4 cron jobs** (materialize on leader, `{cronID}-{scheduledTs}` dedup).
 
 ---
 

@@ -56,6 +56,13 @@ export interface Node {
   started_at: string;
   alive: boolean;
   in_flight_tasks: number;
+  role?: string; // "worker" | "server" (P4); absent on older payloads
+}
+
+// P4 leader election: which node currently holds the taskqueue:leader lease.
+export interface LeaderInfo {
+  leader_id: string;
+  is_self: boolean;
 }
 
 export interface DelayedEntry {
