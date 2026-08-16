@@ -1,7 +1,7 @@
 # Architecture
 
-> Living document. Started in Phase 0 (P0.6). Sections marked _(planned)_ describe
-> where later phases take the system; see `PROGRESS.md` for the roadmap and status.
+> Living document. Sections marked _(planned)_ describe where later phases take the
+> system.
 
 ## What this is
 
@@ -11,7 +11,7 @@ through Redis; a Next.js dashboard polls the API and renders the internal state
 (queues, workers, events) so you can _watch_ the system behave.
 
 The design bias is **stdlib-first**: standard library + `go-redis` only, with new
-dependencies justified in the `PROGRESS.md` Decision Log. Redis is the single
+dependencies kept deliberately minimal. Redis is the single
 coordination bus — no gRPC between components — matching the Sidekiq/Celery/BullMQ
 family of systems.
 

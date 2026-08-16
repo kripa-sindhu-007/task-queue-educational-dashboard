@@ -34,8 +34,7 @@ out the rest of that sleep before it was even *seen*. P3.4 replaces the sleep wi
 every ready-producer rings the doorbell (one capped token per newly-ready task), so a
 freshly-enqueued task wakes a blocked worker almost immediately. Correctness is
 unchanged — the task still leaves `ready` only through the unchanged atomic claim in
-`dequeue.lua`; the token is a pure wake-up (see the Decision Log entry and
-`plan.md`).
+`dequeue.lua`; the token is a pure wake-up.
 
 **Metric.** `enqueue_to_start` — the time from a task becoming ready to a worker
 picking it up. Measured directly (Signal → `WaitForReady` returns) against real Redis
