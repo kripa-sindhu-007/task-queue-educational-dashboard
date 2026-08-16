@@ -28,6 +28,9 @@ func NewRouter(h *Handler, logger *slog.Logger, metrics http.Handler) http.Handl
 	mux.HandleFunc("GET /api/leader", h.GetLeader)
 	mux.HandleFunc("GET /api/queues", h.GetQueues)
 	mux.HandleFunc("GET /api/metrics/enhanced", h.GetEnhancedMetrics)
+	mux.HandleFunc("POST /api/cron", h.CreateCron)
+	mux.HandleFunc("GET /api/cron", h.ListCron)
+	mux.HandleFunc("DELETE /api/cron/{id}", h.DeleteCron)
 	mux.HandleFunc("DELETE /api/flush", h.FlushData)
 
 	if metrics != nil {

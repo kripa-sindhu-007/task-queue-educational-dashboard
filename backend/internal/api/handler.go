@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/cron"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/election"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/model"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
@@ -34,6 +35,7 @@ type HandlerDeps struct {
 	QueuePeek   *store.QueuePeekStore
 	Tasks       *store.TaskStore
 	Nodes       *store.NodeStore
+	Cron        *cron.CronStore    // P4.4: cron-job registry (create/list/delete)
 	Telemetry   *telemetry.Metrics // nil is a safe no-op
 
 	// NodeID identifies this process for the leader crown (P4.1): GET /api/leader

@@ -17,8 +17,8 @@
 
 | Field | Value |
 |---|---|
-| **Current phase** | **Phase 4 — Coordination** IN PROGRESS. Increment 1 (leader election) DONE: **P4.1 + P4.2 + P4.3** + the P4.6 election-failover test. Next increments: cron (P4.4), chaos (P4.5), docs (P4.7). Phase 3 ✅ complete (all P3.x). |
-| **Current task** | Phase 4 Increment 1 (leader election) BUILT + VERIFIED 2026-08-16 — Redis-lease `Elector.RunWhenLeader` gates scheduler+reaper; API-only backend + scheduler×N topology; 👑 crown on the leader in the dashboard. Quality gate green (build/vet/`test -race`); docker failover verified (graceful 0.2s, SIGKILL ~10.5s≈TTL, API up throughout). Ready to commit on `feature/p3-blocking-pickup`. |
+| **Current phase** | **Phase 4 — Coordination** IN PROGRESS. Increment 1 (leader election, P4.1–P4.3) ✅ committed+pushed. Increment 2 (cron, **P4.4** + P4.6 cron test) BUILT + VERIFIED, ready to commit. Next: chaos (P4.5), docs (P4.7). Phase 3 ✅ complete. |
+| **Current task** | Phase 4 Increment 2 (cron jobs) BUILT + VERIFIED 2026-08-16 — `internal/cron` materializer runs on the leader (leaderCtx), `robfig/cron/v3`, `{cronID}-{scheduledTs}` + Exists-idempotency for failover dedup, skip-to-latest catch-up, POST/GET/DELETE `/api/cron`. Quality gate green (build/vet/`test -race`, 5 cron tests). Live: */10s cron fired 43 slots contiguous/zero-dup across a leader kill+failover. Ready to commit on `feature/p3-blocking-pickup`. |
 | **Last updated** | 2026-08-15 |
 | **Last session** | 2026-08-13 — P3.4 blocking task pickup: doorbell (`BLPOP taskqueue:ready:signal`) replaces worker sleep-polling; `dequeue.lua` byte-for-byte unchanged (at-least-once preserved). All 4 ready-producers ring a cap-guarded doorbell (`signal.lua` + inline in `promote.lua`/`reclaim.lua`). New `SignalBlock`/`SignalCap` config; explicit go-redis `PoolSize ≥ WorkerCount + headroom`. 68 tests green (+15) incl. real-Redis integration; measured p99 `enqueue_to_start` ~495 ms → ~0.86 ms at low/bursty load (`docs/BENCHMARKS.md`). |
 | **Hours spent / budget** | ~40 / ~100 |
@@ -180,9 +180,9 @@ cluster; the broker detects dead nodes and reclaims their work.
 | P4.1 | ☑ Leader election via Redis lease: `SET taskqueue:leader {nodeID} NX PX 10000`, renew at 1/3 TTL, step down on renewal failure; new `internal/election/` with `Elector{RunWhenLeader(ctx, fn)}` | done | `internal/election/{election.go,scripts/renew.lua,scripts/release.lua}`; owner-only CAS renew/release Lua; steps down on any renew error; graceful release on ctx cancel; `LEADER_ELIGIBLE`/`LEADER_TTL_MS` config |
 | P4.2 | ☑ Gate scheduler + reaper + cron behind leadership; leader-scoped contexts cancelled on loss | done | `cmd/server/main.go`: delayed scheduler + reaper now run inside `Elector.RunWhenLeader(ctx, …)` bound to `leaderCtx`; loops stop the instant leadership is lost. Cron will slot in here (P4.4) |
 | P4.3 | ☑ Run 2 broker replicas in compose; dashboard shows a crown/badge on the leader | done | Topology: API-only `backend` (LEADER_ELIGIBLE=false, keeps :8080) + new leader-eligible `scheduler` service (no ports), demo `--scale scheduler=2`. `GET /api/leader`; NodePanel 👑 crown badge. Prometheus scrapes `scheduler` (reaper_reclaims) via DNS SD. **Verified:** graceful failover 0.2s, SIGKILL failover ~10.5s (≈TTL), API up throughout, new leader runs the loops |
-| P4.4 | ☐ Cron jobs: `POST /api/cron` (spec + task template) stored in `taskqueue:cron`; leader materializes due instances. Use `robfig/cron` parser. Instance IDs = `{cronID}-{scheduledTs}` for failover dedup (reuses P1.6) | todo | New `internal/cron/` |
+| P4.4 | ☑ Cron jobs: `POST /api/cron` (spec + task template) stored in `taskqueue:cron`; leader materializes due instances. Use `robfig/cron` parser. Instance IDs = `{cronID}-{scheduledTs}` for failover dedup (reuses P1.6) | done | New `internal/cron/` (cron.go/store.go/materializer.go); `robfig/cron/v3` `SecondOptional` (5- & 6-field). Materializer runs inside `RunWhenLeader` (leaderCtx); **skip-to-latest** catch-up; Exists-gated enqueue then cursor-last. `CRON_TICK_MS` (1000). POST/GET/DELETE `/api/cron`. Frontend UI deferred. **Live-verified:** */10s job fired 43 slots contiguous, zero duplicates, across a leader kill+failover (crown scheduler-1→2, cron kept firing on new leader) |
 | P4.5 | ☐ Chaos script: random worker/broker kills for 10 min → invariant check (`submitted == completed + dead_lettered`, no duplicate cron fires) | todo | `make chaos` |
-| P4.6 | ◑ Tests: election failover (leader dies → follower takes over < TTL) with miniredis; cron materialization with injected clock | in-progress | **Election slice DONE:** `election_test.go` (-race) — failover-after-crash (miniredis `FastForward` past TTL → follower acquires, and NOT before), owner-only renew/release CAS, ineligible-never-acquires. Cron-materialization test pending (P4.4) |
+| P4.6 | ◑ Tests: election failover (leader dies → follower takes over < TTL) with miniredis; cron materialization with injected clock | in-progress | **Election + cron slices DONE:** `election_test.go` (failover-after-crash via FastForward, owner-only CAS, ineligible-never-acquires) + `cron/materializer_test.go` (injected clock, `-race`: exactly-once-per-slot, idempotent re-tick, handover-no-double-fire, catch-up=skip-to-latest) + `cron/store_test.go` + `api/cron_test.go`. Remaining: a combined chaos-invariant harness pairs with P4.5 |
 | P4.7 | ☐ Docs: "Leader election & split-brain" — honest section on the unsafety window without fencing tokens, why lease-not-Raft | todo | |
 | P4.8 | ☐ README rewrite: lead with demo GIFs (kill-a-worker, leader failover, load ramp), Mermaid diagrams, delivery-guarantees section, benchmark table, Limitations, future roadmap (Raft, Streams, DAG workflows) | todo | Non-negotiable ~8h — do NOT cut this for features |
 | P4.9 | ☐ Record 2–3 GIFs into `docs/gifs/` | todo | |
@@ -274,6 +274,18 @@ cluster; the broker detects dead nodes and reclaims their work.
 - **Next:** finish P1.3 tests, then start P1.4
 - **Blockers:** none
 ```
+
+---
+
+### 2026-08-16 — Phase 4 Increment 2: Cron Jobs (P4.4 + P4.6 cron slice)
+- **★ approved decisions:** catch-up = **skip-to-latest**; frontend cron UI **deferred**.
+- **New `internal/cron`:** `CronStore` (hash `taskqueue:cron`, id→JSON, Save/List/Get/Delete/UpdateCursor); `robfig/cron/v3` parser with `SecondOptional` (accepts 5- and 6-field, so `*/10 * * * * *` works for demos); `CronMaterializer` with an **injected `now`** and `Start(leaderCtx)` split from `materialize(ctx, now)`.
+- **Leader-gated:** `go cronMat.Start(leaderCtx)` added inside the existing `RunWhenLeader` closure in `cmd/server/main.go` — only the leader materializes. Each tick (default `CRON_TICK_MS=1000`) computes the **latest** due slot per job, builds instance ID `{cronID}-{scheduledTs}`, runs the **same `TaskStore.Exists` idempotency check `SubmitTask` uses** (failover dedup), enqueues on the normal path (Save→Enqueue→submitted event→IncrSubmitted), and advances the cursor **last**.
+- **API:** `POST/GET/DELETE /api/cron` (`internal/api/cron.go`); `HandlerDeps.Cron`. Dep added: `robfig/cron/v3 v3.0.1`.
+- **Tests (P4.6 cron slice, injected clock, `-race`, no real sleep):** exactly-once-per-slot, idempotent re-tick, **handover-no-double-fire**, catch-up=skip-to-latest; plus `store_test.go` CRUD and `api/cron_test.go` (201 / bad-schedule 400 / GET / DELETE). 5/5 green.
+- **Quality gate:** `gofmt`/`vet`/`build` clean, `go test ./... -race` green, no existing tests broken. Frontend untouched.
+- **Live-verified (docker, 2 schedulers + 3 workers):** created a `*/10s` cron job, killed the leader mid-schedule → crown migrated `scheduler-1 → scheduler-2`, cron **kept firing on the new leader**. Redis ground truth: **43 cron instances, 43 distinct, ZERO duplicates, perfectly contiguous every 10s across the failover** — exactly the "cron keeps firing, no duplicate fires" acceptance.
+- **STATE:** UNCOMMITTED on `feature/p3-blocking-pickup`: new `backend/internal/cron/` + `internal/api/cron.go` + `cron_test.go`; M {cmd/server/main.go, api/handler.go, api/router.go, config/config.go, store/redis.go, go.mod, go.sum, PROGRESS.md}. Kripa commits. **Next: P4.5 chaos script** + P4.7 split-brain/at-least-once docs.
 
 ---
 

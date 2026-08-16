@@ -20,6 +20,7 @@ const (
 	KeyEventsCluster = "taskqueue:events:cluster" // retained list of lifecycle-only events (node_joined/node_dead/reclaimed)
 	KeyReadySignal   = "taskqueue:ready:signal"   // P3.4: doorbell list — one wake-up token per newly-ready task (see queue.Signal)
 	KeyLeader        = "taskqueue:leader"         // P4.1: leader-election lease — value = leader node ID, PX = LeaderTTL
+	KeyCron          = "taskqueue:cron"           // P4.4: cron-job registry hash — {job id → json(CronJob)}
 )
 
 // poolHeadroom is the number of connections reserved on top of WorkerCount when
