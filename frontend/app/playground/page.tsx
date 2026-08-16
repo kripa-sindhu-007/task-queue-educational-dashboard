@@ -3,6 +3,7 @@ import MetricsPanel from "@/components/MetricsPanel";
 import FailedTasksPanel from "@/components/FailedTasksPanel";
 import TaskFlowDiagram from "@/components/TaskFlowDiagram";
 import NodePanel from "@/components/NodePanel";
+import CronPanel from "@/components/CronPanel";
 import QueuePanel from "@/components/QueuePanel";
 import ActivityLog from "@/components/ActivityLog";
 import { Boxes } from "lucide-react";
@@ -41,6 +42,9 @@ export default function PlaygroundPage() {
 
       {/* Cluster Nodes + Workers (full width) */}
       <NodePanel />
+
+      {/* Scheduled jobs the leader materializes (full width) */}
+      <CronPanel />
 
       {/* Queue Contents + Activity Log */}
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">

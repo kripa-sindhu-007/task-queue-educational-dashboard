@@ -65,6 +65,30 @@ export interface LeaderInfo {
   is_self: boolean;
 }
 
+// P4.4 cron jobs: a recurring schedule the leader materializes into tasks.
+export interface CronTaskTemplate {
+  type: string;
+  payload?: Record<string, unknown>;
+  priority: number;
+  max_retries: number;
+}
+
+export interface CronJob {
+  id: string;
+  schedule: string;
+  task: CronTaskTemplate;
+  enabled: boolean;
+  created_at: string;
+  last_scheduled_unix: number;
+}
+
+export interface CreateCronRequest {
+  id?: string;
+  schedule: string;
+  task: CronTaskTemplate;
+  enabled: boolean;
+}
+
 export interface DelayedEntry {
   task: Task;
   execute_at: number;

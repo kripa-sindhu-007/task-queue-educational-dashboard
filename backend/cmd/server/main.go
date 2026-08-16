@@ -21,6 +21,7 @@ import (
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/api"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/broker"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/config"
+	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/cron"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/election"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/handler"
 	"github.com/kripa-sindhu-007/task-queue-educational-dashboard/backend/internal/queue"
@@ -56,6 +57,7 @@ func main() {
 	workerStateStore := store.NewWorkerStateStore(redisClient)
 	queuePeekStore := store.NewQueuePeekStore(redisClient, taskStore)
 	nodeStore := store.NewNodeStore(redisClient, cfg.HeartbeatTTL)
+	cronStore := cron.NewCronStore(redisClient)
 
 	// queue_depth is a scrape-time collector reading ZCARD(ready) via the
 	// QueuePeekStore; only the server registers it (workers have no such store).
@@ -100,6 +102,7 @@ func main() {
 		QueuePeek:   queuePeekStore,
 		Tasks:       taskStore,
 		Nodes:       nodeStore,
+		Cron:        cronStore,
 		Telemetry:   metrics,
 		NodeID:      nodeID,
 
@@ -133,6 +136,11 @@ func main() {
 		Metrics:         metrics,
 	})
 
+	// Cron materializer (P4.4). Like the scheduler and reaper it is a singleton
+	// background loop constructed here but only started under leadership, bound to
+	// leaderCtx, so exactly one node fires scheduled tasks.
+	cronMat := cron.NewCronMaterializer(cronStore, taskStore, priorityQueue, eventStore, metricsStore, cfg.CronTick, nil, logger)
+
 	// Leader election (P4.1). The delayed scheduler and reaper are singletons: only
 	// the leader runs them, bound to a leader-scoped context so they stop the
 	// instant this node loses the lease and restart when it re-acquires. A
@@ -146,9 +154,10 @@ func main() {
 	})
 	go func() {
 		elector.RunWhenLeader(ctx, func(leaderCtx context.Context) {
-			logger.Info("leadership acquired — starting delayed scheduler + reaper", "node_id", nodeID)
+			logger.Info("leadership acquired — starting delayed scheduler + reaper + cron", "node_id", nodeID)
 			go delayedScheduler.Start(leaderCtx)
 			go taskReaper.Start(leaderCtx)
+			go cronMat.Start(leaderCtx)
 		})
 	}()
 

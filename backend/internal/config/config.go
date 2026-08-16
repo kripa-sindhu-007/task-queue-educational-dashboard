@@ -45,6 +45,11 @@ type Config struct {
 	LeaderEligible bool          // whether this node competes for leadership and runs the singleton loops
 	LeaderTTL      time.Duration // leader lease TTL; renew interval derives as TTL/3
 
+	// Phase 4: cron jobs (P4.4). The leader-gated cron materializer scans stored
+	// schedule specs on this tick and enqueues the latest due slot as an ordinary
+	// task on the existing enqueue path.
+	CronTick time.Duration // how often the cron materializer scans for due schedules
+
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
@@ -80,6 +85,8 @@ func Load() (*Config, error) {
 
 		LeaderEligible: getEnvBool("LEADER_ELIGIBLE", true),  // compete for leadership by default (single-binary wins trivially)
 		LeaderTTL:      getEnvMillis("LEADER_TTL_MS", 10000), // 10s lease; renewed every ~3.3s (TTL/3)
+
+		CronTick: getEnvMillis("CRON_TICK_MS", 1000), // 1s default cron scan cadence
 
 		ReadTimeout:     getEnvMillis("HTTP_READ_TIMEOUT_MS", 10000),
 		WriteTimeout:    getEnvMillis("HTTP_WRITE_TIMEOUT_MS", 15000),
@@ -141,6 +148,9 @@ func (c *Config) validate() error {
 	}
 	if c.LeaderTTL <= 0 {
 		return fmt.Errorf("config: LEADER_TTL_MS must be > 0")
+	}
+	if c.CronTick <= 0 {
+		return fmt.Errorf("config: CRON_TICK_MS must be > 0")
 	}
 	return nil
 }

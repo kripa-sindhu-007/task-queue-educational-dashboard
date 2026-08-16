@@ -41,6 +41,13 @@ Enqueue→start latency (p50/p99), throughput by status, queue depth, per-type t
 
 ![Observability](docs/images/observability.png)
 
+### 👑 Coordination — leader election & cron
+Exactly one scheduler holds the crown and runs the singleton loops (scheduler, reaper, cron). Kill it and the crown migrates while the API stays up. Cron jobs are created and managed right from the dashboard — schedule presets, plain-English translation, live "last fired".
+
+![Leader election — crown on the elected scheduler](docs/images/leader.png)
+
+![Cron scheduler panel](docs/images/cron.png)
+
 ### 📚 Learn — a guided curriculum
 Authored chapters from "what is a task queue?" through delivery guarantees, the Two Generals problem, Redis Lua atomicity, distribution, and observability.
 
@@ -59,7 +66,12 @@ Authored chapters from "what is a task queue?" through delivery guarantees, the 
 **Distribution**
 - Standalone, horizontally-scalable `worker` replicas (`docker compose --scale worker=N`)
 - Heartbeats (TTL keys) + dead-node detection with a grace window so the kill-a-worker demo is visible
-- Server owns the API, the delayed-task scheduler, and the reaper; workers own execution
+- An API-only `backend` plus leader-eligible `scheduler` replicas; workers own execution
+
+**Coordination (leader election + cron)**
+- **Leader election** via a Redis lease — exactly one `scheduler` replica runs the delayed scheduler, reaper, and cron; the rest stand by. Kill the leader and the crown migrates (graceful: instant, crash: < lease TTL) while the API never blinks
+- **Cron jobs** the leader materializes onto the queue with `{cronID}-{scheduledTs}` IDs + idempotency, so a failover mid-fire never double-fires — managed from the dashboard or `POST /api/cron`
+- **Chaos-tested** — `make chaos` kills random workers *and* schedulers under load and asserts zero loss + cron integrity ([`scripts/chaos.sh`](scripts/chaos.sh)); honest split-brain writeup in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#coordination-leader-election-cron--split-brain-phase-4)
 
 **Performance**
 - **Doorbell pickup**: idle workers block on `BLPOP` a signal key instead of sleep-polling — pickup latency drops from ~`PollInterval/2` to sub-millisecond, with `dequeue.lua` byte-for-byte unchanged (correctness preserved)
@@ -75,26 +87,28 @@ Authored chapters from "what is a task queue?" through delivery guarantees, the 
 ## Architecture
 
 ```
-        ┌──────────────┐        HTTP/JSON        ┌────────────────────────────┐
-        │  Next.js UI  │ ───────────────────────▶│  server  (:8080)           │
-        │  :3000       │◀─────────────────────── │  API · scheduler · reaper  │
-        │  / play /learn│      polling            └──────────────┬─────────────┘
-        └──────────────┘                                         │ atomic Lua
-                                                                 ▼
-                                                        ┌─────────────────┐
-   ┌──────────────┐   register/heartbeat · BLPOP doorbell│    Redis 7     │
-   │ worker × N   │◀───────────────────────────────────▶│  ZSETs + hashes │
-   │ :9100 metrics│    lease · ack/nack · extend         │  + Lua scripts  │
-   └──────────────┘                                       └─────────────────┘
-          ▲                                                        ▲
-          │ scrape                                                 │ scrape
-     ┌────┴─────────┐                                       ┌──────┴───────┐
-     │ Prometheus   │──────────────────────────────────────▶│  Grafana     │
-     │ :9090        │        (Docker DNS service discovery)  │  :3001       │
-     └──────────────┘                                        └──────────────┘
+   ┌──────────────┐   HTTP/JSON     ┌──────────────────────┐
+   │  Next.js UI  │ ───────────────▶│  backend  :8080      │  API only —
+   │  :3000       │◀─────────────── │  LEADER_ELIGIBLE=0   │  runs no singletons
+   └──────────────┘    polling      └──────────┬───────────┘
+                                               │ atomic Lua
+   ┌────────────────────────┐  Redis lease     │
+   │  scheduler × N         │  taskqueue:leader │
+   │  the elected leader    │◀────────────┐     ▼
+   │  runs scheduler·reaper │             │  ┌────────────────────┐
+   │  ·cron  (rest stand by)│─────────────┼─▶│      Redis 7       │
+   └────────────────────────┘             │  │  ZSETs · hashes    │
+   ┌──────────────┐  heartbeat · doorbell │  │  · Lua · leases    │
+   │  worker × N  │◀─────────────────────────│  · leader lease    │
+   │  :9100       │  Lua lease dequeue/ack   └────────────────────┘
+   └──────────────┘                                   ▲ scrape
+                        ┌────────────┐                │        ┌──────────┐
+                        │ Prometheus │────────────────┴───────▶│ Grafana  │
+                        │  :9090     │  (Docker DNS discovery)  │  :3001   │
+                        └────────────┘                          └──────────┘
 ```
 
-Redis is the only coordination bus (no gRPC). `ready` / `delayed` / `processing` are **ZSETs holding task IDs**; the canonical record is a `taskqueue:task:{id}` hash. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+Redis is the only coordination bus (no gRPC). `ready` / `delayed` / `processing` are **ZSETs holding task IDs**; the canonical record is a `taskqueue:task:{id}` hash. The delayed scheduler, reaper, and cron are **singletons gated behind a Redis-lease leader election** — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#coordination-leader-election-cron--split-brain-phase-4) for the full design, including the honest split-brain analysis.
 
 ### Task lifecycle
 
@@ -176,8 +190,8 @@ Go and Node run inside containers — nothing else to install.
 git clone https://github.com/kripa-sindhu-007/task-queue-educational-dashboard.git
 cd task-queue-educational-dashboard
 
-# app + 3 workers + full observability stack
-docker compose up -d --build --scale worker=3
+# app + 2 schedulers (for the leader-failover demo) + 3 workers + full observability
+docker compose up -d --build --scale scheduler=2 --scale worker=3
 ```
 
 | Service | URL |
@@ -197,9 +211,19 @@ docker compose up -d --build --scale worker=3
    docker kill $(docker compose ps -q worker | head -1)   # watch the reaper reclaim + rebalance
    ```
 4. Open **Grafana** to see the same run as metrics
-5. Prove zero loss end-to-end:
+5. **Leader failover** — the **Cluster Nodes** panel shows a 👑 on the elected scheduler. Kill it and watch the crown migrate while the API stays up:
    ```bash
-   SOAK_DURATION=8m SOAK_RATE=40 SOAK_CHAOS=1 ./scripts/soak.sh
+   docker kill $(docker compose ps -q scheduler | head -1)   # crown migrates in < 10s
+   ```
+6. **Cron** — create a schedule from the **Scheduled Jobs** panel (or the API), then kill the leader again and confirm it keeps firing exactly once per slot:
+   ```bash
+   curl -X POST http://localhost:8080/api/cron -H 'Content-Type: application/json' \
+     -d '{"schedule":"*/10 * * * * *","task":{"type":"hash","priority":5,"max_retries":3},"enabled":true}'
+   ```
+7. Prove it all survives real chaos (random worker + scheduler kills, zero-loss + cron invariants):
+   ```bash
+   ./scripts/soak.sh          # zero-loss soak (SOAK_CHAOS=1 kills a worker mid-run)
+   cd backend && make chaos   # random worker + scheduler kills under load; asserts the invariants
    ```
 
 ### Stop
@@ -231,6 +255,9 @@ Environment variables (set per service in `docker-compose.yml`):
 | `MAX_QUEUE_DEPTH` | `0` (off) | Ready-queue cap for backpressure (compose: `20000`) |
 | `RETRY_AFTER_SECONDS` | — | `Retry-After` header value when shedding |
 | `POLL_INTERVAL_MS` | `500` | Fallback poll interval (doorbell backstop) |
+| `LEADER_ELIGIBLE` | `true` | Whether this node competes for leadership (compose: `false` on `backend`, `true` on `scheduler`) |
+| `LEADER_TTL_MS` | `10000` | Leader lease TTL; renewed at ⅓ TTL, worst-case crash failover ≈ this |
+| `CRON_TICK_MS` | `1000` | How often the leader checks cron jobs for due slots |
 
 ---
 
@@ -241,7 +268,9 @@ Environment variables (set per service in `docker-compose.yml`):
 | `POST` | `/api/tasks` | Submit a task (`type`: `sleep` / `hash` / `http_fetch`) |
 | `GET` | `/api/metrics` | Basic counters |
 | `GET` | `/api/metrics/enhanced` | Extended metrics (+ success rate, DLQ size, submitted) |
-| `GET` | `/api/nodes` | Live worker nodes (heartbeat, capacity, in-flight) |
+| `GET` | `/api/nodes` | Live nodes — servers + workers (heartbeat, capacity, in-flight) |
+| `GET` | `/api/leader` | Current leader (`{leader_id, is_self}`) — drives the 👑 crown |
+| `POST` `GET` `DELETE` | `/api/cron` `/api/cron/{id}` | Create / list / delete cron jobs |
 | `GET` | `/api/queues` | Peek ready + delayed contents |
 | `GET` | `/api/events?limit=50` | Recent activity log |
 | `GET` | `/api/events/cluster` | Cluster-level events (node join/leave, reclaim) |
@@ -270,6 +299,8 @@ backend/
     broker/       # lease core + Lua: dequeue, ack, nack, extend
     queue/        # ready/delayed ZSETs + Lua: promote, signal (doorbell)
     reaper/       # expired-lease reclaim + Lua: reclaim
+    election/     # leader election + Lua: renew, release (owner-only CAS)
+    cron/         # cron store + leader-materialized scheduler (robfig/cron)
     worker/       # execution loop + doorbell (BLPOP) pickup
     telemetry/    # slog + Prometheus metrics + queue-depth collector
     store/        # Redis client, keys, node heartbeats, events, DLQ
@@ -283,7 +314,9 @@ frontend/
 deploy/
   prometheus/     # scrape config (server + workers via Docker DNS SD)
   grafana/        # provisioned datasource + 11-panel dashboard
-scripts/soak.sh   # zero-loss soak harness (steady + chaos)
+scripts/
+  soak.sh         # zero-loss soak harness (steady + chaos)
+  chaos.sh        # random worker + scheduler kills; asserts zero-loss + cron integrity
 docs/             # ARCHITECTURE.md · BENCHMARKS.md
 docker-compose.yml
 ```

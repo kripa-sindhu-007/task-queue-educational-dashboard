@@ -7,6 +7,8 @@ import {
   WorkerState,
   Node,
   LeaderInfo,
+  CronJob,
+  CreateCronRequest,
   QueueSnapshot,
   EnhancedMetrics,
 } from "./types";
@@ -94,4 +96,31 @@ export async function getEnhancedMetrics(): Promise<EnhancedMetrics> {
 export async function flushData(): Promise<void> {
   const res = await fetch(`${API_BASE}/api/flush`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to flush data");
+}
+
+// P4.4 cron jobs
+export async function getCronJobs(): Promise<CronJob[]> {
+  const res = await fetch(`${API_BASE}/api/cron`);
+  if (!res.ok) throw new Error("Failed to fetch cron jobs");
+  return res.json();
+}
+
+export async function createCronJob(req: CreateCronRequest): Promise<CronJob> {
+  const res = await fetch(`${API_BASE}/api/cron`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to create cron job");
+  }
+  return res.json();
+}
+
+export async function deleteCronJob(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/cron/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete cron job");
 }
